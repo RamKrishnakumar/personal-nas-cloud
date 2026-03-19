@@ -1,0 +1,78 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"jsonFile" : "directory-.-Debug-d0094a50bb2071803777.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.16"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2
+					]
+				}
+			],
+			"name" : "Debug",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "MyNAS",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "MyNAS::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-MyNAS-Debug-8c5e99dfb0cf7b99358e.json",
+					"name" : "MyNAS",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "MyNAS_autogen::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-MyNAS_autogen-Debug-770f4731b3ba15bd1603.json",
+					"name" : "MyNAS_autogen",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "MyNAS_autogen_timestamp_deps::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-MyNAS_autogen_timestamp_deps-Debug-ad13d73986e75ac2258b.json",
+					"name" : "MyNAS_autogen_timestamp_deps",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "C:/Ram_Krishna_Personal_projects/MyNAS/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug",
+		"source" : "C:/Ram_Krishna_Personal_projects/MyNAS"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 7
+	}
+}
