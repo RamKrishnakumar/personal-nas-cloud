@@ -1,5 +1,0 @@
-C:/Ram_Krishna_Personal_projects/MyNAS/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/CMakeFiles/MyNAS.dir
-C:/Ram_Krishna_Personal_projects/MyNAS/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/CMakeFiles/edit_cache.dir
-C:/Ram_Krishna_Personal_projects/MyNAS/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/CMakeFiles/rebuild_cache.dir
-C:/Ram_Krishna_Personal_projects/MyNAS/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/CMakeFiles/MyNAS_autogen_timestamp_deps.dir
-C:/Ram_Krishna_Personal_projects/MyNAS/build/Desktop_Qt_6_10_2_MinGW_64_bit-Debug/CMakeFiles/MyNAS_autogen.dir

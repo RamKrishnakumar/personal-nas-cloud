@@ -1,3 +1,0 @@
-C:\Qt\Tools\CMake_64\bin\cmake.exe -E rm -f CMakeFiles\MyNAS.dir/objects.a
-C:\Qt\Tools\mingw1310_64\bin\ar.exe qc CMakeFiles\MyNAS.dir/objects.a @CMakeFiles\MyNAS.dir\objects1.rsp
-C:\Qt\Tools\mingw1310_64\bin\g++.exe -g -mwindows -Wl,--whole-archive CMakeFiles\MyNAS.dir/objects.a -Wl,--no-whole-archive -o MyNAS.exe -Wl,--out-implib,libMyNAS.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\MyNAS.dir\linkLibs.rsp

@@ -3,6 +3,7 @@
 #include <QWidget>
 #include <QHeaderView>
 #include <QDir>
+#include <QDebug>
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle("MyNAS");
@@ -10,22 +11,27 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setupUI();
 }
 
-void MainWindow::setupUI() {
-    //  Central widget
+void MainWindow::setupUI()
+{
     QWidget* central = new QWidget(this);
     setCentralWidget(central);
 
     QVBoxLayout* layout = new QVBoxLayout(central);
     layout->setContentsMargins(8, 8, 8, 8);
 
-    // File system model
-    m_fileModel = new QFileSystemModel(this);
-    m_fileModel->setRootPath(QDir::homePath());
+    // Safe path — falls back to home if D:/ not ready
+    QString nasRoot = "E:/";
+    QDir dir(nasRoot);
+    if (!dir.exists()) {
+        nasRoot = QDir::homePath();
+    }
 
-    // Tree View
+    m_fileModel = new QFileSystemModel(this);
+    m_fileModel->setRootPath(nasRoot);
+
     m_fileTree = new QTreeView(this);
     m_fileTree->setModel(m_fileModel);
-    m_fileTree->setRootIndex(m_fileModel->index(QDir::homePath()));
+    m_fileTree->setRootIndex(m_fileModel->index(nasRoot));
     m_fileTree->setColumnWidth(0, 300);
     m_fileTree->setSortingEnabled(true);
     m_fileTree->header()->setSectionResizeMode(QHeaderView::Interactive);
