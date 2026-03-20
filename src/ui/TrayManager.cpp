@@ -3,11 +3,13 @@
 #include <QApplication>
 
 TrayManager::TrayManager(MainWindow* window, QObject* parent) : QObject(parent), m_window(window) {
-    m_tray = new QSystemTrayIcon(QIcon(":/resources/app.ico"), this);
-    m_tray->setToolTip("MyNAS — Running");
+    m_tray = new QSystemTrayIcon(this);
+    // ← Add a default system icon so tray doesn't crash
+    m_tray->setIcon(QApplication::style()->standardIcon(QStyle::SP_ComputerIcon));
+    m_tray->setToolTip("NestDrive — Running");
 
     m_menu = new QMenu();
-    QAction* showAction = m_menu->addAction("Open MyNAS");
+    QAction* showAction = m_menu->addAction("Open NestDrive");
     m_menu->addSeparator();
     QAction* quitAction = m_menu->addAction("Quit");
 

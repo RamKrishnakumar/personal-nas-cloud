@@ -5,7 +5,7 @@
 #include <QLabel>
 #include <QPushButton>
 
-#include "Fileserver.h"
+#include "FileServer.h"
 
 class MainWindow : public QMainWindow {
     Q_OBJECT;
@@ -24,6 +24,6 @@ private:
     QLabel*             m_serverStatus;
     FileServer*         m_fileServer;
 
-    
+
     void setupUI();
 };
