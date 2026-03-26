@@ -1,0 +1,16 @@
+[DDNS]
+; Your No-IP account username (email or login name)
+username=YOUR_NOIP_USERNAME
+
+; Your No-IP account password
+password=YOUR_NOIP_PASSWORD
+
+; Your No-IP hostname (e.g. nestdrive.ddns.org)
+hostname=YOUR_HOSTNAME.ddns.net
+
+[Server]
+; Port the file server listens on
+port=8080
+
+; Root directory to serve files from
+nasRoot=E:/

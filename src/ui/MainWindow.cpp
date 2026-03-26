@@ -1,90 +1,236 @@
-#include "MainWindow.h"
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QWidget>
-#include <QHeaderView>
-#include <QDir>
-#include <QDebug>
+/**
+ * @file MainWindow.cpp
+ * @brief Main application window for NestDrive.
+ *
+ * This file is responsible for:
+ *  1. Building the entire UI layout (server control bar + file browser)
+ *  2. Owning and managing the FileServer instance (LAN/remote file access)
+ *  3. Owning and managing the DdnsUpdater instance (keeps DDNS hostname current)
+ *  4. Reacting to server start/stop events and updating UI labels accordingly
+ */
 
+// ── Includes ──────────────────────────────────────────────────────────────────
+#include "core/FileServer/FileServer.h" // HTTP file server — serves files over LAN/internet
+#include "core/AppConfig/AppConfig.h"   // AppConfig's header
+#include "MainWindow.h"                 // This file's own header — declares the class
+
+#include <QVBoxLayout>                  // Vertical box layout — stacks widgets top to bottom
+#include <QHBoxLayout>                  // Horizontal box layout — places widgets side by side
+#include <QWidget>                      // Base class for all UI elements
+#include <QHeaderView>                  // Controls the column header behaviour in QTreeView
+#include <QDir>                         // Filesystem directory operations (checking if E:/ exists)
+#include <QDebug>                       // qDebug() for logging to Qt Creator's output panel
+
+// ── Constructor ───────────────────────────────────────────────────────────────
+
+/**
+ * @brief Constructs the MainWindow.
+ *
+ * Order of operations:
+ *  1. Initialize member objects (FileServer, DdnsUpdater) via initializer list
+ *  2. Set window title and size
+ *  3. Connect FileServer signals to our UI update slots
+ *  4. Initialize and start the DdnsUpdater
+ *  5. Build the UI layout (setupUI)
+ *
+ * @param parent  Qt parent widget — passing nullptr makes this a top-level window
+ */
 MainWindow::MainWindow(QWidget* parent)
-    : QMainWindow(parent)
-    , m_fileServer(new FileServer(this))
+    : QMainWindow(parent)                    // Initialize Qt's base window class
+    , m_fileServer(new FileServer(this))     // Create file server — 'this' = Qt parent (auto memory managed)
+    , m_ddnsUpdater(new DdnsUpdater(this))   // Create DDNS updater — 'this' = Qt parent (auto memory managed)
 {
-    setWindowTitle("Nestdrive v0.2");
-    resize(900, 650);
+    // ── Window Setup ──────────────────────────────────────────────────────────
+    setWindowTitle("NestDrive v0.4");  // Title shown in the window title bar
+    resize(900, 650);                  // Default window size in pixels (width x height)
 
+    // ── FileServer Signal Connections ─────────────────────────────────────────
+    // Qt signals & slots: when FileServer emits a signal, our slot function
+    // is called automatically. This keeps server logic decoupled from UI logic.
+
+    // When server successfully starts → call onServerStarted() to update the UI label
     connect(m_fileServer, &FileServer::serverStarted,
             this,          &MainWindow::onServerStarted);
+
+    // When server stops → call onServerStopped() to reset the UI label
     connect(m_fileServer, &FileServer::serverStopped,
             this,          &MainWindow::onServerStopped);
 
+    // ── DDNS Updater Setup ────────────────────────────────────────────────────
+    // The DDNS updater runs silently in the background every 5 minutes.
+    // It checks if the WAN IP has changed and pushes an update to No-IP
+    // so that nestdrive.ddns.org always resolves to the correct IP.
+    // This ensures remote access works even after Airtel changes the public IP.
+
+    // Load credentials from config.ini — never hardcoded in source
+    AppConfig config;
+
+    if (!config.isLoaded()) {
+        // Warn but don't crash — app still works on LAN without DDNS
+        qDebug() << "[Main] ⚠️  config.ini missing — DDNS updates disabled.";
+    } else {
+        m_ddnsUpdater->setCredentials(
+            config.ddnsUsername(),   // Read from config.ini [DDNS] username
+            config.ddnsPassword(),   // Read from config.ini [DDNS] password
+            config.ddnsHostname()    // Read from config.ini [DDNS] hostname
+        );
+        m_ddnsUpdater->start(5 * 60 * 1000);
+
+        connect(m_ddnsUpdater, &DdnsUpdater::updateSucceeded,
+                this, [](const QString& ip, const QString& response) {
+            qDebug() << "[DDNS] ✅ Updated. IP:" << ip << "Response:" << response;
+        });
+
+        connect(m_ddnsUpdater, &DdnsUpdater::updateFailed,
+                this, [](const QString& error) {
+            qDebug() << "[DDNS] ❌ Failed:" << error;
+        });
+    }
+
+    // ── Build UI ──────────────────────────────────────────────────────────────
+    // Called last — all member objects must be initialized before UI is built
+    // because setupUI() references m_fileServer and other members.
     setupUI();
 }
 
+// ── UI Builder ────────────────────────────────────────────────────────────────
+
+/**
+ * @brief Constructs and arranges all UI widgets inside the main window.
+ *
+ * Layout structure:
+ *  QMainWindow
+ *  └── central QWidget
+ *      └── QVBoxLayout (mainLayout) — vertical stack
+ *          ├── QHBoxLayout (barLayout) — top control bar
+ *          │   ├── QPushButton (m_serverBtn) — start/stop server
+ *          │   └── QLabel (m_serverStatus) — shows current server URL
+ *          └── QTreeView (m_fileTree) — file browser for E:/ drive
+ */
 void MainWindow::setupUI()
 {
+    // Every QMainWindow needs a central widget — it fills the window area.
+    // All other widgets are placed inside this central widget.
     QWidget* central = new QWidget(this);
     setCentralWidget(central);
 
+    // Main vertical layout — stacks the control bar on top, file tree below.
     QVBoxLayout* mainLayout = new QVBoxLayout(central);
-    mainLayout->setContentsMargins(8, 8, 8, 8);
-    mainLayout->setSpacing(6);
+    mainLayout->setContentsMargins(8, 8, 8, 8); // 8px padding on all four sides
+    mainLayout->setSpacing(6);                   // 6px gap between child widgets
 
-    // --- Server control bar ---
+    // ── Server Control Bar ────────────────────────────────────────────────────
+    // A horizontal row at the top containing the Start/Stop button and status label.
     QHBoxLayout* barLayout = new QHBoxLayout();
 
+    // Start/Stop button — clicking toggles the HTTP file server on/off.
     m_serverBtn = new QPushButton("▶  Start Server", this);
-    m_serverBtn->setFixedHeight(32);
+    m_serverBtn->setFixedHeight(32); // Fixed height keeps the bar compact
     connect(m_serverBtn, &QPushButton::clicked,
             this,         &MainWindow::onToggleServer);
 
+    // Status label — shows "Server stopped" or the live URL when running.
+    // Styled grey when stopped, bright green when running.
     m_serverStatus = new QLabel("Server stopped", this);
-    m_serverStatus->setStyleSheet("color: #888;");
+    m_serverStatus->setStyleSheet("color: #888;"); // Grey = inactive
 
+    // Add button and label to the horizontal bar
     barLayout->addWidget(m_serverBtn);
     barLayout->addWidget(m_serverStatus);
-    barLayout->addStretch();
+    barLayout->addStretch(); // Pushes button and label to the left, leaves right side empty
+
+    // Add the horizontal bar to the top of the main vertical layout
     mainLayout->addLayout(barLayout);
 
-    // --- File browser ---
+    // ── File Browser ──────────────────────────────────────────────────────────
+    // Shows the contents of the NAS storage drive (E:/) in a tree view.
+    // Falls back to the user's home folder if E:/ doesn't exist on this machine.
+
     QString nasRoot = "E:/";
     QDir dir(nasRoot);
-    if (!dir.exists())
+    if (!dir.exists()) {
+        // E:/ not found — fall back gracefully instead of crashing
         nasRoot = QDir::homePath();
+        qDebug() << "[NAS] E:/ not found, falling back to:" << nasRoot;
+    }
 
+    // QFileSystemModel provides live filesystem data to the tree view.
+    // It watches the directory for changes (new files, deletions etc.) automatically.
     m_fileModel = new QFileSystemModel(this);
-    m_fileModel->setRootPath(nasRoot);
+    m_fileModel->setRootPath(nasRoot); // Sets which directory to start scanning from
 
+    // QTreeView renders the filesystem model as an expandable tree.
     m_fileTree = new QTreeView(this);
     m_fileTree->setModel(m_fileModel);
-    m_fileTree->setRootIndex(m_fileModel->index(nasRoot));
-    m_fileTree->setColumnWidth(0, 300);
-    m_fileTree->setSortingEnabled(true);
-    m_fileTree->header()->setSectionResizeMode(QHeaderView::Interactive);
 
+    // setRootIndex tells the tree to show nasRoot as the top-level folder,
+    // hiding all parent directories above it (e.g. C:/, D:/ won't appear)
+    m_fileTree->setRootIndex(m_fileModel->index(nasRoot));
+    m_fileTree->setColumnWidth(0, 300);                              // Name column width
+    m_fileTree->setSortingEnabled(true);                             // Allow column sorting
+    m_fileTree->header()->setSectionResizeMode(QHeaderView::Interactive); // User can resize columns
+
+    // Add the file browser below the control bar — takes up remaining space
     mainLayout->addWidget(m_fileTree);
 }
 
+// ── Server Toggle Slot ────────────────────────────────────────────────────────
+
+/**
+ * @brief Called when the Start/Stop button is clicked.
+ *
+ * Acts as a toggle — checks current state and either starts or stops the server.
+ * The UI update (button text, status label) happens via the serverStarted and
+ * serverStopped signals emitted by FileServer, keeping this function simple.
+ */
 void MainWindow::onToggleServer()
 {
     if (m_fileServer->isRunning()) {
+        // Server is running → stop it
         m_fileServer->stop();
     } else {
+        // Server is not running → start it on port 8080.
+        // Port 8080 is the standard alternative HTTP port — no admin
+        // privileges needed unlike port 80, and widely recognized by routers.
         m_fileServer->start(8080);
     }
 }
 
+// ── Server Event Slots ────────────────────────────────────────────────────────
+
+/**
+ * @brief Called automatically when FileServer emits serverStarted().
+ *
+ * Updates the status label to show the live URL so the user can
+ * copy and paste it into any browser on the same network.
+ *
+ * @param ip    Local IP address the server is listening on (e.g. 192.168.1.100)
+ * @param port  Port number the server is listening on (e.g. 8080)
+ */
 void MainWindow::onServerStarted(QString ip, quint16 port)
 {
+    // Build the full URL string e.g. "http://192.168.1.100:8080"
     QString url = QString("http://%1:%2").arg(ip).arg(port);
+
+    // Green + bold = server is active and reachable
     m_serverStatus->setStyleSheet("color: #00cc44; font-weight: bold;");
     m_serverStatus->setText("● Running at " + url);
+
+    // Change button label to show stop action
     m_serverBtn->setText("■  Stop Server");
 }
 
+/**
+ * @brief Called automatically when FileServer emits serverStopped().
+ *
+ * Resets the status label and button back to their default stopped state.
+ */
 void MainWindow::onServerStopped()
 {
+    // Grey = server is inactive
     m_serverStatus->setStyleSheet("color: #888;");
     m_serverStatus->setText("Server stopped");
+
+    // Change button label back to show start action
     m_serverBtn->setText("▶  Start Server");
 }

@@ -83,6 +83,23 @@ MyNAS/
 > Architecture is intentionally modular — UI, networking, database, and AI layers
 > are kept separate so each component can be swapped independently as the project scales.
 
+## Configuration
+
+NestDrive reads credentiaons from a local `config.ini` file that is 
+**never commited to GitHub**.
+
+### Setup
+
+1. Copy the exmaple config: cp config.ini.example config.ini
+
+2. Edit `config.ini` with your real values:
+- No-IP username and password
+- Your DDNS hostname
+- NAS root drive path
+
+3. Place `config.ini` next to `MyNAS.exe` in the build folder too
+4. Run the app - it loads credentials automatically at startup
+
 ---
 
 ## Getting Started

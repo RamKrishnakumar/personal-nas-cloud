@@ -124,3 +124,8 @@ translations/
 Thumbs.db
 desktop.ini
 
+# Local config - contains credentials, never commit this
+config.ini
+
+# Qt MOC / UIC generated files (auto-regenerated on build)
+*_autogen/
