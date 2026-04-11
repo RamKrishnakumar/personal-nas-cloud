@@ -57,8 +57,8 @@ QString AppConfig::ddnsHostname() const
 
 quint16 AppConfig::serverPort() const
 {
-    // Returns 8080 as default if 'port' key is not found in config.ini
-    return static_cast<quint16>(m_settings.value("Server/port", 8080).toInt());
+    // Returns 9090 as default if 'port' key is not found in config.ini
+    return static_cast<quint16>(m_settings.value("Server/port", 9090).toInt());
 }
 
 QString AppConfig::nasRoot() const

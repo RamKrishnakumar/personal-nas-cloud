@@ -20,7 +20,7 @@ public:
      * @brief Starts the TCP server on the specified port.
      * @return true if successful, false if the port is already in use.
      */
-    bool    start(quint16 port = 8080);
+    bool    start(quint16 port = 9090);
 
     /**
      * @brief Stops the server and closes all active connections.

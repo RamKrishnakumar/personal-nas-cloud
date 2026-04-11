@@ -34,7 +34,7 @@ public:
     QString ddnsHostname() const;  ///< DDNS hostname (e.g. nestdrive.ddns.org)
 
     // ── Server Settings ─────────────────────────────────────────────
-    quint16 serverPort() const;    ///< HTTP server port (default: 8080)
+    quint16 serverPort() const;    ///< HTTP server port (default: 9090)
     QString nasRoot()    const;    ///< Root directory to serve (default: E:/)
 
     /**

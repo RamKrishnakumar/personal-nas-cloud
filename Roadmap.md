@@ -29,7 +29,7 @@
 - [ ] Tabbed `SettingsDialog` window with gear icon in MainWindow toolbar
 - [ ] **Server Tab**
   - [ ] Drive/folder picker using QFileDialog (replaces hardcoded `E:/`)
-  - [ ] Server port selector (replaces hardcoded `8080`)
+  - [ ] Server port selector (replaces hardcoded `9090`)
   - [ ] All values saved to and read from `config.ini`
 - [ ] **DDNS Tab**
   - [ ] Input fields for No-IP username, password, hostname

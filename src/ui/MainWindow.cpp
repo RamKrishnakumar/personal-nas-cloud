@@ -189,10 +189,10 @@ void MainWindow::onToggleServer()
         // Server is running → stop it
         m_fileServer->stop();
     } else {
-        // Server is not running → start it on port 8080.
-        // Port 8080 is the standard alternative HTTP port — no admin
+        // Server is not running → start it on port 9090.
+        // Port 9090 is the standard alternative HTTP port — no admin
         // privileges needed unlike port 80, and widely recognized by routers.
-        m_fileServer->start(8080);
+        m_fileServer->start(9090);
     }
 }
 
@@ -205,11 +205,11 @@ void MainWindow::onToggleServer()
  * copy and paste it into any browser on the same network.
  *
  * @param ip    Local IP address the server is listening on (e.g. 192.168.1.100)
- * @param port  Port number the server is listening on (e.g. 8080)
+ * @param port  Port number the server is listening on (e.g. 9090)
  */
 void MainWindow::onServerStarted(QString ip, quint16 port)
 {
-    // Build the full URL string e.g. "http://192.168.1.100:8080"
+    // Build the full URL string e.g. "http://192.168.1.100:9090"
     QString url = QString("http://%1:%2").arg(ip).arg(port);
 
     // Green + bold = server is active and reachable

@@ -1,4 +1,4 @@
-Internet → <WAN Ip address>:8080 → Router Port Forward → 192.168.1.100:8080 → NestDrive
+Internet → <WAN Ip address>:9090 → Router Port Forward → 192.168.1.100:9090 → NestDrive
               (your public IP)                            (your laptop)
 Three parts:
 
@@ -21,9 +21,9 @@ Add a new rule:
 | Name / Description | NestDrive                            |
 | Server IP Address  | 192.168.1.100 ← your laptop's LAN IP |
 | Internet IP        | get from whatismyip.com and paster   |
-| Start Port         | 8080                                 |
-| End Port           | 8080                                 |
-| Port               | 8080                                 |
+| Start Port         | 9090                                 |
+| End Port           | 9090                                 |
+| Port               | 9090                                 |
 | Protocol           | TCP                                  |
 | Status / Enable    | ✅ Enabled                          |
 Save/Apply
@@ -31,7 +31,7 @@ Save/Apply
 After Saving the Rule
 Test it immediately from your Mac using mobile data (turn off WiFi on your Mac, use hotspot or mobile data) then open:
 
-http://<WAN-Ip-address get from whatismyip.com and match from your admin panel of wifi>:8080
+http://<WAN-Ip-address get from whatismyip.com and match from your admin panel of wifi>:9090
 
 If NestDrive loads → port forwarding is working perfectly.
 If it times out → the router needs a reboot after saving the rule (some routers require this) 
@@ -64,7 +64,7 @@ Once you complete Parts 1 and 2 and have your No-IP token ready, we'll add a new
 
 Pings DuckDNS API every 5 minutes to keep your IP updated
 
-Shows the public URL http://hostname.ddns.org:8080 in the app UI alongside the LAN URL
+Shows the public URL http://hostname.ddns.org:9090 in the app UI alongside the LAN URL
 
 
 ## Implementation Plan

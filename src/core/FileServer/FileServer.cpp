@@ -11,6 +11,7 @@
 #include <QUrl>
 #include <QDebug>
 #include <QTimer>
+#include <QTime>
 
 /**
  * @class FileServer
@@ -25,7 +26,7 @@
 FileServer::FileServer(QObject* parent)
     : QObject(parent)
     , m_server(new QTcpServer(this))
-    , m_port(8080)
+    , m_port(9090)
 {
     connect(m_server, &QTcpServer::newConnection,
             this,      &FileServer::onNewConnection);
@@ -73,6 +74,16 @@ void FileServer::onNewConnection()
 {
     while (m_server->hasPendingConnections()) {
         QTcpSocket* socket = m_server->nextPendingConnection();
+
+        // ── ADD THIS BLOCK ──────────────────────────────────────────────────
+        // Log every incoming connection immediately when it arrives.
+        // peerAddress() = the IP of whoever is connecting (mobile, browser etc.)
+        // If nothing appears here during a test, the request never reached this PC.
+        qDebug() << "[Server] 🔌 New connection from:"
+                 << socket->peerAddress().toString()
+                 << "| Port:" << socket->peerPort()
+                 << "| Time:" << QTime::currentTime().toString("hh:mm:ss");
+        // ───────────────────────────────────────────────────────────────────
 
         // ← Removed Qt::UniqueConnection — doesn't work with lambdas
         connect(socket, &QTcpSocket::readyRead,
@@ -179,6 +190,14 @@ void FileServer::handleRequest(QTcpSocket* socket)
         if (parts.size() >= 2)
             urlPath = QUrl::fromPercentEncoding(parts[1].toUtf8());
     }
+
+
+    // ── ADD THIS ────────────────────────────────────────────────────────────
+    // Log the full HTTP request line so we can see exactly what was requested.
+    // e.g. "[Server] 📥 GET / from 117.x.x.x"
+    qDebug() << "[Server] 📥 Request:" << lines.value(0)
+             << "| From:" << socket->peerAddress().toString();
+    // ────────────────────────────────────────────────────────────────────────
 
     emit requestReceived(urlPath);
 

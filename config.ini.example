@@ -10,7 +10,7 @@ hostname=YOUR_HOSTNAME.ddns.net
 
 [Server]
 ; Port the file server listens on
-port=8080
+port=9090
 
 ; Root directory to serve files from
 nasRoot=E:/
