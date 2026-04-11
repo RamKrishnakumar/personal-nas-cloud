@@ -20,7 +20,7 @@ Runs directly on the OS with zero browser dependency — lightweight, fast, and 
 
 ## Overview
 
-MyNAS turns your always-on laptop or PC into a personal Network Attached Storage system.
+NestDrive-NAS turns your always-on laptop or PC into a personal Network Attached Storage system.
 All your files are accessible from anywhere — no cloud subscriptions, no third-party servers,
 full control over your own data.
 
@@ -153,13 +153,10 @@ The binary will be output to build/ or build/Release/.
 ### Roadmap
 
 v0.1  ✅  Native file browser + system tray (current)
-v0.2  🔲  Background HTTP file server — LAN access
-v0.3  🔲  Port forwarding + DDNS config in Settings UI
-v1.0  🔲  Stable remote NAS — Windows binary release
-v1.5  🔲  Blur detection sweep + photo grid view
-v2.0  🔲  Ollama Vision face clustering + semantic search
-v2.5  🔲  Linux binary release
-v3.0  🔲  macOS support
+v0.2  ✅  Background HTTP file server — LAN access
+v0.3  ✅  Port forwarding + DDNS config in Settings UI
+v0.4  ✅ Released | main | DDNS auto-updater (No-IP), AppConfig, config.ini |
+More details you will find under Roadmap.md file[Roadmap.md]
 
 ### Contributing
 
