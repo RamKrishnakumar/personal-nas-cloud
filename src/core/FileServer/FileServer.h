@@ -69,6 +69,6 @@ private:
     QString nasRoot = "E:/"; 
 
     // Server Core
-    QTcpServer* m_server;
-    quint16     m_port;
+    QTcpServer* m_server = nullptr;
+    quint16     m_port = 9090;
 };

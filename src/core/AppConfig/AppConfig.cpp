@@ -1,8 +1,30 @@
 #include "AppConfig.h"
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QStandardPaths>
 #include <QDebug>
+
+/**
+ * @brief Returns the path to the configuration file.
+ * @return The path to config.ini.
+ */
+QString AppConfig::configPath()
+{
+    const QString appDirPath = QCoreApplication::applicationDirPath() + "/config.ini"; // Look for config.ini next to the executable first
+    if (QFile::exists(appDirPath))
+    {
+        return appDirPath; // Found config.ini next to the executable
+    }
+
+    const QString localPath = QDir::currentPath() + "/config.ini"; // Fallback: look for config.ini in the current working directory (where the app was launched from)
+    if (QFile::exists(localPath))
+        return localPath; // Found config.ini in the current working directory
+
+    return appDirPath; // Default to app directory path even if it doesn't exist, so the warning message is consistent.
+}
 
 /**
  * @brief Looks for config.ini next to the running executable.
@@ -15,23 +37,27 @@
  */
 AppConfig::AppConfig()
     : m_settings(
-          QCoreApplication::applicationDirPath() + "/config.ini",
-          QSettings::IniFormat   // Plain text key=value file format
-      )
-    , m_loaded(false)
+          configPath(), QSettings::IniFormat),
+      m_loaded(QFile::exists(configPath()))
 {
-    // Check if the config file actually exists
-    QString configPath = QCoreApplication::applicationDirPath() + "/config.ini";
+    ensureDefaults();
+}
 
-    if (!QFile::exists(configPath)) {
-        qDebug() << "[Config] ⚠️  config.ini not found at:" << configPath;
-        qDebug() << "[Config] Copy config.ini.example → config.ini and fill in your credentials.";
-        m_loaded = false;
-        return;
-    }
-
-    m_loaded = true;
-    qDebug() << "[Config] ✅ Loaded config.ini from:" << configPath;
+/**
+ * @brief Ensures that all expected keys exist in the config file, setting defaults if missing.
+ *
+ * This is called during construction to guarantee that getters always have valid data to return,
+ * even if the user hasn't created a config.ini yet. It checks for each key and sets it to a
+ * default value if it's not already present. Finally, it calls sync() to write any changes back
+ * to disk immediately.
+ */
+void AppConfig::ensureDefaults()
+{
+    if (m_settings.value("Server/port").isNull())
+        m_settings.setValue("Server/port", 9090);
+    if (m_settings.value("Server/nasRoot").isNull())
+        m_settings.setValue("Server/nasRoot", "E:/");
+    m_settings.sync();
 }
 
 // ── DDNS Getters ──────────────────────────────────────────────────────────────
@@ -70,4 +96,20 @@ QString AppConfig::nasRoot() const
 bool AppConfig::isLoaded() const
 {
     return m_loaded;
+}
+
+void AppConfig::setDdnsUsername(const QString &value) { m_settings.setValue("DDNS/username", value); }
+
+void AppConfig::setDdnsPassword(const QString &value) { m_settings.setValue("DDNS/password", value); }
+
+void AppConfig::setDdnsHostname(const QString &value) { m_settings.setValue("DDNS/hostname", value); }
+
+void AppConfig::setServerPort(quint16 value) { m_settings.setValue("Server/port", value); }
+
+void AppConfig::setNasRoot(const QString &value) { m_settings.setValue("Server/nasRoot", value); }
+
+bool AppConfig::save()
+{
+    m_settings.sync();
+    return m_settings.status() == QSettings::NoError;
 }

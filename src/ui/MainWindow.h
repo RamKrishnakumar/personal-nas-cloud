@@ -76,6 +76,8 @@ private:
     // ── UI Widget Members ──────────────────────────────────────────────────────
     // Initialized to nullptr so they have a safe default value before
     // setupUI() assigns real objects to them.
+    
+    void loadConfig(); // Helper method to load settings from config.ini — called once in constructor
 
     QTreeView*        m_fileTree   = nullptr; // The file browser tree — shows E:/ contents
     QFileSystemModel* m_fileModel  = nullptr; // Supplies live filesystem data to m_fileTree
@@ -88,6 +90,7 @@ private:
 
     FileServer*   m_fileServer   = nullptr; // Owns the HTTP server lifecycle
     DdnsUpdater*  m_ddnsUpdater  = nullptr; // Owns the DDNS polling timer and API calls
+    AppConfig     m_config;                // Loads settings from config.ini at startup
 
     // ── Private Helper Method ──────────────────────────────────────────────────
 

@@ -10,8 +10,6 @@
  */
 
 // ── Includes ──────────────────────────────────────────────────────────────────
-#include "core/FileServer/FileServer.h" // HTTP file server — serves files over LAN/internet
-#include "core/AppConfig/AppConfig.h"   // AppConfig's header
 #include "MainWindow.h"                 // This file's own header — declares the class
 
 #include <QVBoxLayout>                  // Vertical box layout — stacks widgets top to bottom
@@ -41,7 +39,7 @@ MainWindow::MainWindow(QWidget* parent)
     , m_ddnsUpdater(new DdnsUpdater(this))   // Create DDNS updater — 'this' = Qt parent (auto memory managed)
 {
     // ── Window Setup ──────────────────────────────────────────────────────────
-    setWindowTitle("NestDrive v0.4");  // Title shown in the window title bar
+    setWindowTitle("NestDrive v0.5");  // Title shown in the window title bar
     resize(900, 650);                  // Default window size in pixels (width x height)
 
     // ── FileServer Signal Connections ─────────────────────────────────────────
@@ -65,14 +63,11 @@ MainWindow::MainWindow(QWidget* parent)
     // Load credentials from config.ini — never hardcoded in source
     AppConfig config;
 
-    if (!config.isLoaded()) {
-        // Warn but don't crash — app still works on LAN without DDNS
-        qDebug() << "[Main] ⚠️  config.ini missing — DDNS updates disabled.";
-    } else {
+    if (m_config.isLoaded()) {
         m_ddnsUpdater->setCredentials(
-            config.ddnsUsername(),   // Read from config.ini [DDNS] username
-            config.ddnsPassword(),   // Read from config.ini [DDNS] password
-            config.ddnsHostname()    // Read from config.ini [DDNS] hostname
+        config.ddnsUsername(),   // Read from config.ini [DDNS] username
+        config.ddnsPassword(),   // Read from config.ini [DDNS] password
+        config.ddnsHostname()    // Read from config.ini [DDNS] hostname
         );
         m_ddnsUpdater->start(5 * 60 * 1000);
 
@@ -85,6 +80,9 @@ MainWindow::MainWindow(QWidget* parent)
                 this, [](const QString& error) {
             qDebug() << "[DDNS] ❌ Failed:" << error;
         });
+    } else {
+        // Warn but don't crash — app still works on LAN without DDNS
+        qDebug() << "[Main] ⚠️  config.ini missing — DDNS updates disabled.";
     }
 
     // ── Build UI ──────────────────────────────────────────────────────────────
@@ -115,13 +113,13 @@ void MainWindow::setupUI()
     setCentralWidget(central);
 
     // Main vertical layout — stacks the control bar on top, file tree below.
-    QVBoxLayout* mainLayout = new QVBoxLayout(central);
+    auto* mainLayout = new QVBoxLayout(central);
     mainLayout->setContentsMargins(8, 8, 8, 8); // 8px padding on all four sides
     mainLayout->setSpacing(6);                   // 6px gap between child widgets
 
     // ── Server Control Bar ────────────────────────────────────────────────────
     // A horizontal row at the top containing the Start/Stop button and status label.
-    QHBoxLayout* barLayout = new QHBoxLayout();
+    auto* barLayout = new QHBoxLayout();
 
     // Start/Stop button — clicking toggles the HTTP file server on/off.
     m_serverBtn = new QPushButton("▶  Start Server", this);
@@ -146,12 +144,12 @@ void MainWindow::setupUI()
     // Shows the contents of the NAS storage drive (E:/) in a tree view.
     // Falls back to the user's home folder if E:/ doesn't exist on this machine.
 
-    QString nasRoot = "E:/";
+    QString nasRoot = m_config.nasRoot(); // Read NAS root path from config.ini (e.g. "E:/");
     QDir dir(nasRoot);
     if (!dir.exists()) {
         // E:/ not found — fall back gracefully instead of crashing
         nasRoot = QDir::homePath();
-        qDebug() << "[NAS] E:/ not found, falling back to:" << nasRoot;
+        qDebug() << "[NAS] " << nasRoot << " not found, falling back to:" << nasRoot;
     }
 
     // QFileSystemModel provides live filesystem data to the tree view.
@@ -192,7 +190,8 @@ void MainWindow::onToggleServer()
         // Server is not running → start it on port 9090.
         // Port 9090 is the standard alternative HTTP port — no admin
         // privileges needed unlike port 80, and widely recognized by routers.
-        m_fileServer->start(9090);
+            m_fileServer->start(m_config.serverPort()); // Read port from config.ini (default 9090)
+            m_fileServer->setNasRoot(m_config.nasRoot()); // Set NAS root path in FileServer from config.ini
     }
 }
 
@@ -209,15 +208,12 @@ void MainWindow::onToggleServer()
  */
 void MainWindow::onServerStarted(QString ip, quint16 port)
 {
-    // Build the full URL string e.g. "http://192.168.1.100:9090"
-    QString url = QString("http://%1:%2").arg(ip).arg(port);
-
-    // Green + bold = server is active and reachable
+    // Green = server is active
+    // Show the URL in the status label so user can access it from their phone or another PC
+    // The button text changes to "Stop Server" to indicate the next action if clicked again
     m_serverStatus->setStyleSheet("color: #00cc44; font-weight: bold;");
-    m_serverStatus->setText("● Running at " + url);
-
-    // Change button label to show stop action
-    m_serverBtn->setText("■  Stop Server");
+    m_serverStatus->setText("● Running at http://" + ip + ":" + QString::number(port));
+    m_serverBtn->setText("■ Stop Server");
 }
 
 /**

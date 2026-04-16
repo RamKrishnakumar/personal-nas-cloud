@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(MyNAS VERSION 0.4 LANGUAGES CXX)
+project(MyNAS VERSION 0.5 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -38,39 +38,3 @@ target_link_libraries(MyNAS PRIVATE
 set_target_properties(MyNAS PROPERTIES
     WIN32_EXECUTABLE TRUE
 )
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Auto-copy config.ini to build folder as part of the MyNAS build.
-#
-# CMAKE_CURRENT_SOURCE_DIR = project root (where CMakeLists.txt lives)
-# $<TARGET_FILE_DIR:MyNAS>  = the folder containing the compiled MyNAS.exe
-#
-# This means:
-#   - config.ini stays safely at project root (backed up, gitignored)
-#   - A fresh copy lands next to MyNAS.exe on every build
-#   - The copy runs as a POST_BUILD step for the target, not as a separate
-#     standalone build action.
-# ─────────────────────────────────────────────────────────────────────────────
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/config.ini")
-    add_custom_command(
-        TARGET MyNAS POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/config.ini"
-            "$<TARGET_FILE_DIR:MyNAS>/config.ini"
-        COMMENT "Copying config.ini to build output folder..."
-    )
-endif()
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Also copy config.ini.example so new contributors can see the template
-# next to the exe and know exactly what to fill in.
-# ─────────────────────────────────────────────────────────────────────────────
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/config.ini.example")
-    add_custom_command(
-        TARGET MyNAS POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/config.ini.example"
-            "$<TARGET_FILE_DIR:MyNAS>/config.ini.example"
-        COMMENT "Copying config.ini.example to build output folder..."
-    )
-endif()

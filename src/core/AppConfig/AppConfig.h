@@ -43,7 +43,17 @@ public:
      */
     bool isLoaded() const;
 
+    void setDdnsUsername(const QString& value);
+    void setDdnsPassword(const QString& value);
+    void setDdnsHostname(const QString& value);
+    void setServerPort(quint16 value);
+    void setNasRoot(const QString& value);
+    bool save();
+
+    static QString configPath();
+
 private:
+    void ensureDefaults();
     QSettings m_settings; ///< Qt INI file reader
     bool      m_loaded;   ///< True if config.ini exists and was opened
 };
