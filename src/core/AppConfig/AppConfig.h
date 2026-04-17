@@ -37,6 +37,12 @@ public:
     quint16 serverPort() const;    ///< HTTP server port (default: 9090)
     QString nasRoot()    const;    ///< Root directory to serve (default: E:/)
 
+      // ── TLS (Step 1) ─────────────────────────────────────────────────────
+    bool     useHttps()     const;   ///< true → start in HTTPS mode
+    QString  certPath()     const;   ///< path to PEM certificate file
+    QString  keyPath()      const;   ///< path to RSA private key file
+
+    // ── Meta ─────────────────────────────────────────────────────────────
     /**
      * @brief Returns true if config.ini was found and loaded successfully.
      * Use this to show a warning in the UI if credentials are missing.
@@ -48,6 +54,9 @@ public:
     void setDdnsHostname(const QString& value);
     void setServerPort(quint16 value);
     void setNasRoot(const QString& value);
+    void setUseHttps(bool value);
+    void setCertPath(const QString& value);
+    void setKeyPath(const QString& value);
     bool save();
 
     static QString configPath();

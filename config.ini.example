@@ -14,3 +14,8 @@ port=9090
 
 ; Root directory to serve files from
 nasRoot=E:/
+
+
+[TLS]
+certificatePath=certs/server.crt
+privateKeyPath=certs/server.key

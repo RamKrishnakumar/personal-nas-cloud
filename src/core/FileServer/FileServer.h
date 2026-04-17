@@ -3,72 +3,102 @@
 #include <QObject>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QSslSocket>
+#include <QSslConfiguration>
+#include <QSslCertificate>
+#include <QSslKey>
+#include <QSslError>
 #include <QString>
-#include <QStringList>
 
 /**
  * @class FileServer
- * @brief An asynchronous HTTP file server for local network file sharing.
+ * @brief Production-grade HTTPS/HTTP file server using Qt.
+ *
+ * Step 1  — HTTPS Foundation:
+ *   loadTlsFiles()  loads cert + key → builds QSslConfiguration.
+ *   setUseHttps()   switches between HTTPS and plain HTTP mode.
+ *
+ * Step 1B — TLS Socket Wiring (onNewConnection):
+ *   In HTTPS mode every accepted QTcpSocket is promoted to a QSslSocket.
+ *   The raw file-descriptor is adopted by the SSL socket, the TLS
+ *   server-side handshake is started, and HTTP parsing begins only after
+ *   the `encrypted` signal fires — guaranteeing no plain-text data leaks.
+ *
+ * Performance improvements (v0.6):
+ *   • 256 KB streaming chunks  (was 64 KB)
+ *   • HTTP/1.1 byte-range (partial content) support for video seek
+ *   • Aggressive browser caching headers (ETag + Cache-Control)
+ *   • Gzip Content-Encoding for HTML responses
+ *   • Inline CSS/JS minified and split into static helpers
+ *   • Lazy-loaded thumbnail images via loading="lazy"
  */
-class FileServer : public QObject {
+class FileServer : public QObject
+{
     Q_OBJECT
 
 public:
     explicit FileServer(QObject* parent = nullptr);
 
+    // ── TLS (Step 1) ─────────────────────────────────────────────────────────
+
     /**
-     * @brief Starts the TCP server on the specified port.
-     * @return true if successful, false if the port is already in use.
+     * @brief Load PEM certificate + RSA private key from disk.
+     *
+     * Paths may be absolute or relative to the executable directory.
+     * Must be called BEFORE start() when useHttps is true.
+     *
+     * @return true on success; false with reason in tlsErrorString().
      */
+    bool loadTlsFiles(const QString& certificatePath,
+                      const QString& privateKeyPath);
+
+    /** Enable or disable HTTPS mode (default: false = plain HTTP). */
+    void setUseHttps(bool enabled) { m_useHttps = enabled; }
+
+    /** @return true when the server will use TLS for new connections. */
+    bool useHttps() const { return m_useHttps; }
+
+    /**
+     * @return Human-readable description of the last TLS loading error,
+     *         or an empty string when everything is fine.
+     */
+    QString tlsErrorString() const { return m_tlsErrorString; }
+
+    // ── Lifecycle ─────────────────────────────────────────────────────────────
     bool    start(quint16 port = 9090);
-
-    /**
-     * @brief Stops the server and closes all active connections.
-     */
     void    stop();
-
-    /** @return true if the server is currently listening for connections. */
     bool    isRunning() const;
+    quint16 port()      const;
+    QString localIP()   const;
 
-    /** @return The current port the server is bound to. */
-    quint16 port() const;
-
-    /** @return The local IPv4 address of the machine (e.g., 192.168.x.x). */
-    QString localIP() const;
-
-    /** @brief Sets the root directory to be served. Ensure this ends with a slash. */
-    void    setNasRoot(const QString& path) { nasRoot = path; }
+    /** Root directory exposed to browsers — must end without a trailing slash. */
+    void setNasRoot(const QString& path) { nasRoot = path.endsWith('/') || path.endsWith('\\')
+                                               ? path.chopped(1) : path; }
 
 signals:
-    /** @brief Emitted when the server successfully starts listening. */
     void serverStarted(QString ip, quint16 port);
-    
-    /** @brief Emitted when the server is manually stopped. */
     void serverStopped();
-    
-    /** @brief Emitted every time a browser requests a specific URL path. */
     void requestReceived(QString path);
 
 private slots:
-    /** @brief Internal handler for incoming TCP connections. */
-    void onNewConnection();
+    void onNewConnection();   // Step 1B — TLS socket wiring lives here
 
 private:
-    /** @brief Main router: parses HTTP headers and decides whether to send HTML or a File. */
-    void    handleRequest(QTcpSocket* socket);
+    // HTTP request dispatcher
+    void handleRequest(QTcpSocket* socket);
 
-    /** @brief Generates the Grid-view HTML for a folder's contents. */
+    // HTML page builders
     QString buildFileListHTML(const QString& dirPath, const QString& urlPath);
 
-    /** @brief Generates the Preview page for Images and Videos. */
-    QString buildPreviewHTML(const QString& urlPath, 
-                             const QString& fileName, 
-                             const QString& type);
+    // ── Configuration ─────────────────────────────────────────────────────────
+    QString  nasRoot     = "E:/";
+    bool     m_useHttps  = false;
 
-    // Configuration
-    QString nasRoot = "E:/"; 
+    // ── TLS state (Step 1) ────────────────────────────────────────────────────
+    QSslConfiguration m_sslConfig;
+    QString           m_tlsErrorString;
 
-    // Server Core
+    // ── Server core ───────────────────────────────────────────────────────────
     QTcpServer* m_server = nullptr;
-    quint16     m_port = 9090;
+    quint16     m_port   = 9090;
 };

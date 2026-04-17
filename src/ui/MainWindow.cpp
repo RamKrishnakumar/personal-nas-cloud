@@ -180,39 +180,60 @@ void MainWindow::setupUI()
  * Acts as a toggle — checks current state and either starts or stops the server.
  * The UI update (button text, status label) happens via the serverStarted and
  * serverStopped signals emitted by FileServer, keeping this function simple.
+ *
+ * What this does:
+ *   When the user clicks "▶ Start Server" we now:
+ *     1. Read useHttps / certPath / keyPath from config.ini via AppConfig.
+ *     2. If useHttps=true, call loadTlsFiles() and abort with a message if
+ *        the cert/key files cannot be loaded.
+ *     3. Call setUseHttps() to arm HTTPS mode in FileServer.
+ *     4. Call start() as before — the server now accepts TLS connections.
+ *   onServerStarted now shows https:// in the status label.
  */
 void MainWindow::onToggleServer()
 {
     if (m_fileServer->isRunning()) {
-        // Server is running → stop it
         m_fileServer->stop();
-    } else {
-        // Server is not running → start it on port 9090.
-        // Port 9090 is the standard alternative HTTP port — no admin
-        // privileges needed unlike port 80, and widely recognized by routers.
-            m_fileServer->start(m_config.serverPort()); // Read port from config.ini (default 9090)
-            m_fileServer->setNasRoot(m_config.nasRoot()); // Set NAS root path in FileServer from config.ini
+        return;
+    }
+
+    // ── Read config ───────────────────────────────────────────────────────
+    m_fileServer->setNasRoot(m_config.nasRoot());
+
+    // ── Step 1: wire TLS if useHttps = true in config.ini ────────────────
+    const bool wantHttps = m_config.useHttps();
+    m_fileServer->setUseHttps(wantHttps);
+
+    if (wantHttps) {
+        const bool tlsOk = m_fileServer->loadTlsFiles(
+            m_config.certPath(),   // e.g. "cert.pem" next to exe
+            m_config.keyPath()     // e.g. "key.pem"  next to exe
+        );
+
+        if (!tlsOk) {
+            // Surface the error in the status label so the user
+            // can fix the paths in config.ini without digging in logs
+            m_serverStatus->setStyleSheet("color: #ff4444; font-weight: bold;");
+            m_serverStatus->setText("⚠️ TLS error: " + m_fileServer->tlsErrorString());
+            return;
+        }
+    }
+
+    // ── Start server (HTTP or HTTPS depending on setUseHttps above) ───────
+    if (!m_fileServer->start(m_config.serverPort())) {
+        m_serverStatus->setStyleSheet("color: #ff4444; font-weight: bold;");
+        m_serverStatus->setText("⚠️ Port " +
+            QString::number(m_config.serverPort()) + " already in use.");
     }
 }
 
-// ── Server Event Slots ────────────────────────────────────────────────────────
-
-/**
- * @brief Called automatically when FileServer emits serverStarted().
- *
- * Updates the status label to show the live URL so the user can
- * copy and paste it into any browser on the same network.
- *
- * @param ip    Local IP address the server is listening on (e.g. 192.168.1.100)
- * @param port  Port number the server is listening on (e.g. 9090)
- */
+// ─────────────────────────────────────────────────────────────────────────────
 void MainWindow::onServerStarted(QString ip, quint16 port)
 {
-    // Green = server is active
-    // Show the URL in the status label so user can access it from their phone or another PC
-    // The button text changes to "Stop Server" to indicate the next action if clicked again
+    const QString scheme = m_fileServer->useHttps() ? "https" : "http";
     m_serverStatus->setStyleSheet("color: #00cc44; font-weight: bold;");
-    m_serverStatus->setText("● Running at http://" + ip + ":" + QString::number(port));
+    m_serverStatus->setText("● Running at " + scheme + "://" + ip
+                            + ":" + QString::number(port));
     m_serverBtn->setText("■ Stop Server");
 }
 

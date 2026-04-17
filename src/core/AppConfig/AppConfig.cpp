@@ -13,17 +13,13 @@
  */
 QString AppConfig::configPath()
 {
-    const QString appDirPath = QCoreApplication::applicationDirPath() + "/config.ini"; // Look for config.ini next to the executable first
-    if (QFile::exists(appDirPath))
-    {
-        return appDirPath; // Found config.ini next to the executable
-    }
+    const QString appPath = QCoreApplication::applicationDirPath() + "/config.ini";
+    if (QFile::exists(appPath)) return appPath;
 
-    const QString localPath = QDir::currentPath() + "/config.ini"; // Fallback: look for config.ini in the current working directory (where the app was launched from)
-    if (QFile::exists(localPath))
-        return localPath; // Found config.ini in the current working directory
+    const QString cwdPath = QDir::currentPath() + "/config.ini";
+    if (QFile::exists(cwdPath)) return cwdPath;
 
-    return appDirPath; // Default to app directory path even if it doesn't exist, so the warning message is consistent.
+    return appPath; // default write location even if it doesn't exist yet
 }
 
 /**
@@ -36,11 +32,13 @@ QString AppConfig::configPath()
  * so place config.ini there. After deployment, place it next to the exe.
  */
 AppConfig::AppConfig()
-    : m_settings(
-          configPath(), QSettings::IniFormat),
-      m_loaded(QFile::exists(configPath()))
+    : m_settings(configPath(), QSettings::IniFormat)
+    , m_loaded(QFile::exists(configPath()))
 {
     ensureDefaults();
+    if (!m_loaded)
+        qDebug() << "[Config] ⚠️ config.ini not found at" << configPath()
+                 << "— using defaults.";
 }
 
 /**
@@ -53,10 +51,16 @@ AppConfig::AppConfig()
  */
 void AppConfig::ensureDefaults()
 {
-    if (m_settings.value("Server/port").isNull())
-        m_settings.setValue("Server/port", 9090);
-    if (m_settings.value("Server/nasRoot").isNull())
-        m_settings.setValue("Server/nasRoot", "E:/");
+    auto setIf = [this](const QString& key, const QVariant& def) {
+        if (m_settings.value(key).isNull())
+            m_settings.setValue(key, def);
+    };
+
+    setIf("Server/port",     9090);
+    setIf("Server/nasRoot",  "E:/");
+    setIf("Server/useHttps", false);
+    setIf("Server/certPath", "cert.pem");
+    setIf("Server/keyPath",  "key.pem");
     m_settings.sync();
 }
 
@@ -93,6 +97,15 @@ QString AppConfig::nasRoot() const
     return m_settings.value("Server/nasRoot", "E:/").toString();
 }
 
+
+// ── TLS ───────────────────────────────────────────────────────────────────────
+bool    AppConfig::useHttps()  const { return m_settings.value("Server/useHttps", false).toBool(); }
+QString AppConfig::certPath()  const { return m_settings.value("Server/certPath", "cert.pem").toString(); }
+QString AppConfig::keyPath()   const { return m_settings.value("Server/keyPath",  "key.pem").toString(); }
+
+
+
+// ── Meta ──────────────────────────────────────────────────────────────────────
 bool AppConfig::isLoaded() const
 {
     return m_loaded;
@@ -107,6 +120,11 @@ void AppConfig::setDdnsHostname(const QString &value) { m_settings.setValue("DDN
 void AppConfig::setServerPort(quint16 value) { m_settings.setValue("Server/port", value); }
 
 void AppConfig::setNasRoot(const QString &value) { m_settings.setValue("Server/nasRoot", value); }
+
+void AppConfig::setUseHttps(bool value)               { m_settings.setValue("Server/useHttps",  value); }
+
+void AppConfig::setCertPath(const QString& value)     { m_settings.setValue("Server/certPath",  value); }
+void AppConfig::setKeyPath(const QString& value)      { m_settings.setValue("Server/keyPath",   value); }
 
 bool AppConfig::save()
 {
