@@ -62,7 +62,23 @@ public:
     static QString configPath();
 
 private:
-    void ensureDefaults();
+    /**
+     * @brief Writes a starter config.ini with every key at its default value.
+     *
+     * Only called when no config.ini exists. QSettings cannot preserve comments,
+     * so writing on every construction would strip the annotations out of a
+     * config the user had hand-edited from config.ini.example.
+     */
+    void writeStarterConfig();
+
+    /**
+     * @brief Carries values over from key names used by earlier versions.
+     *
+     * Must run before any getter and before writeStarterConfig(), otherwise a
+     * default would be written first and the legacy value never consulted.
+     */
+    void migrateLegacyKeys();
+
     QSettings m_settings; ///< Qt INI file reader
     bool      m_loaded;   ///< True if config.ini exists and was opened
 };

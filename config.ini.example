@@ -1,21 +1,51 @@
-[DDNS]
-; Your No-IP account username (email or login name)
-username=YOUR_NOIP_USERNAME
-
-; Your No-IP account password
-password=YOUR_NOIP_PASSWORD
-
-; Your No-IP hostname (e.g. nestdrive.ddns.org)
-hostname=YOUR_HOSTNAME.ddns.net
+; NestDrive configuration
+;
+; Copy this file to config.ini and fill in your own values:
+;     cp config.ini.example config.ini
+;
+; config.ini is gitignored — it holds credentials and must never be committed.
+;
+; The application looks for config.ini next to the executable first (the build
+; folder during development), then in the current working directory. If neither
+; exists, it writes one with these defaults on first launch.
+;
+; Key names must match exactly. Comments are lost if the application rewrites
+; the file, which it only does when config.ini is missing entirely.
 
 [Server]
-; Port the file server listens on
+
+; Port the file server listens on.
 port=9090
 
-; Root directory to serve files from
+; Root directory exposed to browsers. Use forward slashes on every platform.
+; Windows: E:/    Linux: /mnt/storage    macOS: /Volumes/Storage
 nasRoot=E:/
 
+; Set to true to serve HTTPS instead of plain HTTP.
+; Requires certPath and keyPath below to point at a valid PEM certificate and
+; RSA private key. Generate a self-signed pair for LAN use with:
+;     sh scripts/gen-cert.sh
+useHttps=false
 
-[TLS]
-certificatePath=certs/server.crt
-privateKeyPath=certs/server.key
+; Certificate and private key paths. A relative path resolves against the folder
+; containing the executable, not the current working directory.
+certPath=cert.pem
+keyPath=key.pem
+
+[DDNS]
+
+; No-IP credentials, used to keep your hostname pointing at your current WAN IP.
+;
+; Leave all three blank to disable DDNS entirely — the server still works on the
+; LAN. Do not leave placeholder text here: the updater would then send failing
+; authentication requests to No-IP every five minutes, and repeated failures can
+; get an account blocked.
+
+; No-IP account username (email or login name)
+username=
+
+; No-IP account password
+password=
+
+; No-IP hostname, for example nestdrive.ddns.net
+hostname=

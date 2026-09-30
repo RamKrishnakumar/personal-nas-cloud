@@ -60,15 +60,22 @@ MainWindow::MainWindow(QWidget* parent)
     // so that nestdrive.ddns.org always resolves to the correct IP.
     // This ensures remote access works even after Airtel changes the public IP.
 
-    // Load credentials from config.ini — never hardcoded in source
-    AppConfig config;
+    // Credentials come from config.ini via m_config — never hardcoded in source.
+    const QString ddnsUser = m_config.ddnsUsername();
+    const QString ddnsPass = m_config.ddnsPassword();
+    const QString ddnsHost = m_config.ddnsHostname();
 
-    if (m_config.isLoaded()) {
-        m_ddnsUpdater->setCredentials(
-        config.ddnsUsername(),   // Read from config.ini [DDNS] username
-        config.ddnsPassword(),   // Read from config.ini [DDNS] password
-        config.ddnsHostname()    // Read from config.ini [DDNS] hostname
-        );
+    if (ddnsUser.isEmpty() || ddnsPass.isEmpty() || ddnsHost.isEmpty()) {
+        // Gate on the credentials themselves rather than on isLoaded(). A
+        // config.ini written on first launch exists but has blank DDNS fields,
+        // and starting the updater then would send a failing authentication
+        // request to No-IP every five minutes — repeated failures can get an
+        // account blocked. LAN and HTTPS access are unaffected.
+        qDebug() << "[Main] ℹ️ DDNS credentials incomplete in"
+                 << AppConfig::configPath()
+                 << "— DDNS disabled. LAN access still works.";
+    } else {
+        m_ddnsUpdater->setCredentials(ddnsUser, ddnsPass, ddnsHost);
         m_ddnsUpdater->start(5 * 60 * 1000);
 
         connect(m_ddnsUpdater, &DdnsUpdater::updateSucceeded,
@@ -80,9 +87,6 @@ MainWindow::MainWindow(QWidget* parent)
                 this, [](const QString& error) {
             qDebug() << "[DDNS] ❌ Failed:" << error;
         });
-    } else {
-        // Warn but don't crash — app still works on LAN without DDNS
-        qDebug() << "[Main] ⚠️  config.ini missing — DDNS updates disabled.";
     }
 
     // ── Build UI ──────────────────────────────────────────────────────────────

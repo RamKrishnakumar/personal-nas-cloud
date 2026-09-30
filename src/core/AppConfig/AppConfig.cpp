@@ -35,33 +35,85 @@ AppConfig::AppConfig()
     : m_settings(configPath(), QSettings::IniFormat)
     , m_loaded(QFile::exists(configPath()))
 {
-    ensureDefaults();
-    if (!m_loaded)
+    migrateLegacyKeys();
+
+    if (!m_loaded) {
         qDebug() << "[Config] ⚠️ config.ini not found at" << configPath()
-                 << "— using defaults.";
+                 << "— writing one with default values.";
+        writeStarterConfig();
+    }
 }
 
 /**
- * @brief Ensures that all expected keys exist in the config file, setting defaults if missing.
+ * @brief Moves values from key names used by earlier versions to current ones.
  *
- * This is called during construction to guarantee that getters always have valid data to return,
- * even if the user hasn't created a config.ini yet. It checks for each key and sets it to a
- * default value if it's not already present. Finally, it calls sync() to write any changes back
- * to disk immediately.
+ * v0.5's config.ini.example documented a [TLS] section:
+ *
+ *     [TLS]
+ *     certificatePath=certs/server.crt
+ *     privateKeyPath=certs/server.key
+ *
+ * but the code has always read Server/certPath and Server/keyPath. Anyone who
+ * followed the example therefore had their cert paths silently ignored and fell
+ * back to cert.pem / key.pem next to the executable.
+ *
+ * Carry the old values over so an existing config keeps working. A value already
+ * present under the current key always wins. The legacy keys are left in place
+ * rather than deleted — silently editing a user's config is worse than leaving a
+ * stale key behind — but they are logged as ignored.
  */
-void AppConfig::ensureDefaults()
+void AppConfig::migrateLegacyKeys()
 {
-    auto setIf = [this](const QString& key, const QVariant& def) {
-        if (m_settings.value(key).isNull())
-            m_settings.setValue(key, def);
+    struct Move { const char* legacy; const char* current; };
+    static constexpr Move moves[] = {
+        { "TLS/certificatePath", "Server/certPath" },
+        { "TLS/privateKeyPath",  "Server/keyPath"  },
     };
 
-    setIf("Server/port",     9090);
-    setIf("Server/nasRoot",  "E:/");
-    setIf("Server/useHttps", false);
-    setIf("Server/certPath", "cert.pem");
-    setIf("Server/keyPath",  "key.pem");
+    bool migrated = false;
+    for (const Move& move : moves) {
+        const QVariant legacyValue = m_settings.value(QLatin1String(move.legacy));
+        if (legacyValue.isNull())
+            continue;
+
+        if (!m_settings.value(QLatin1String(move.current)).isNull()) {
+            qDebug() << "[Config] ℹ️" << move.legacy << "ignored —"
+                     << move.current << "is already set.";
+            continue;
+        }
+
+        m_settings.setValue(QLatin1String(move.current), legacyValue);
+        migrated = true;
+        qDebug() << "[Config] ✅ Migrated" << move.legacy << "→" << move.current
+                 << "=" << legacyValue.toString();
+    }
+
+    if (migrated)
+        m_settings.sync();
+}
+
+/**
+ * @brief Writes every key at its default value, creating config.ini.
+ *
+ * Only runs on first launch, when no config.ini exists. The getters below each
+ * carry their own default, so this is not needed for reading — its purpose is
+ * to leave the user a complete, editable file rather than an empty one.
+ */
+void AppConfig::writeStarterConfig()
+{
+    m_settings.setValue("Server/port",     9090);
+    m_settings.setValue("Server/nasRoot",  "E:/");
+    m_settings.setValue("Server/useHttps", false);
+    m_settings.setValue("Server/certPath", "cert.pem");
+    m_settings.setValue("Server/keyPath",  "key.pem");
+    m_settings.setValue("DDNS/username",   "");
+    m_settings.setValue("DDNS/password",   "");
+    m_settings.setValue("DDNS/hostname",   "");
     m_settings.sync();
+
+    if (m_settings.status() != QSettings::NoError)
+        qDebug() << "[Config] ❌ Could not write" << configPath()
+                 << "— status:" << m_settings.status();
 }
 
 // ── DDNS Getters ──────────────────────────────────────────────────────────────
