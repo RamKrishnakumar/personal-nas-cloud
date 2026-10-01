@@ -8,6 +8,14 @@
 #include <QTimer>
 
 #ifdef Q_OS_WIN
+// See the note in HttpServer.cpp: windows.h defines min and max as macros unless
+// NOMINMAX is set first, and the resulting errors point at unrelated lines.
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
 #  include <winsock2.h>
 #else
 #  include <unistd.h>

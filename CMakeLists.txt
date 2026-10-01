@@ -3,6 +3,19 @@ project(MyNAS VERSION 0.5 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# ── Windows header hygiene ───────────────────────────────────────────────────
+# windows.h defines min and max as macros, which then collide with std::min,
+# std::max and std::numeric_limits<T>::max(). The failure is confusing because
+# MSVC reports a syntax error on the line using the standard facility rather than
+# on the include that caused it. Setting this globally means a file that pulls in
+# a Windows header indirectly cannot reintroduce the problem.
+#
+# WIN32_LEAN_AND_MEAN additionally keeps rarely-needed subsystem headers out,
+# which shortens compile times.
+if(WIN32)
+    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)

@@ -5,7 +5,19 @@
 #include <QDebug>
 #include <QThread>
 
+#include <algorithm>
+
 #ifdef Q_OS_WIN
+// Both must precede the Windows headers. windows.h otherwise defines min and max
+// as macros, which breaks any use of std::min, std::max or
+// std::numeric_limits<T>::max() later in the translation unit. MSVC reports it as
+// a syntax error pointing at a line that looks perfectly valid.
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
 #  include <winsock2.h>
 #else
 #  include <unistd.h>
@@ -156,12 +168,12 @@ void HttpServer::stopWorkers()
 
 Worker* HttpServer::chooseWorker() const
 {
-    Worker* best  = nullptr;
-    int     fewest = std::numeric_limits<int>::max();
+    Worker* best   = nullptr;
+    int     fewest = 0;
 
     for (Worker* worker : m_workers) {
         const int count = worker->connectionCount();
-        if (count < fewest) {
+        if (!best || count < fewest) {
             fewest = count;
             best   = worker;
         }
