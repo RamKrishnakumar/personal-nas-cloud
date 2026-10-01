@@ -1,6 +1,7 @@
 #include "core/FileServer/FileServer.h"
 
 #include "handlers/FileRouter.h"
+#include "http/HardwareTier.h"
 #include "http/HttpServer.h"
 
 #include <QCoreApplication>
@@ -93,6 +94,18 @@ bool FileServer::start(quint16 port)
     if (m_server->isListening())
         return true;
 
+    // Detected here rather than in the constructor: the disk query needs the NAS
+    // root, which MainWindow sets from config after construction. Whether the
+    // served volume spins is the single most useful input on this hardware.
+    http::HardwareProfile profile =
+        http::detectHardwareProfile(m_router->nasRoot());
+
+    if (m_streamSlotOverride > 0)
+        profile = http::profileWithStreamSlots(profile, m_streamSlotOverride);
+
+    m_server->setHardwareProfile(profile);
+    qInfo().noquote() << "[Server] " << http::describeProfile(profile);
+
     if (m_useHttps) {
         if (m_sslConfiguration.isNull()) {
             qWarning() << "[Server] ❌ HTTPS requested but no certificate loaded.";
@@ -128,6 +141,11 @@ bool FileServer::isRunning() const
 int FileServer::connectionCount() const
 {
     return m_server->connectionCount();
+}
+
+int FileServer::activeStreams() const
+{
+    return m_server->activeStreams();
 }
 
 QString FileServer::localIP() const

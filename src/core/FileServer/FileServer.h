@@ -59,6 +59,22 @@ public:
     /** Live connection count across all worker threads. */
     int connectionCount() const;
 
+    /** Concurrent metered transfers. */
+    int activeStreams() const;
+
+    /**
+     * @brief Overrides the detected simultaneous-transfer limit.
+     *
+     * Zero or less restores automatic detection. Exposed because every detection
+     * heuristic is wrong for somebody, and the right number depends on the
+     * owner's upload bandwidth as much as on their hardware.
+     */
+    // The parameter is deliberately not called "slots": that is a Qt keyword
+    // macro, and moc reads it as the start of a slots: section, failing with
+    // "Missing access specifier for slots" on a line that looks fine.
+    void setStreamSlotOverride(int count) { m_streamSlotOverride = count; }
+    int  streamSlotOverride() const { return m_streamSlotOverride; }
+
     /** Root directory exposed to clients. Set before start(). */
     void setNasRoot(const QString& path);
 
@@ -74,4 +90,5 @@ private:
     QString           m_tlsErrorString;
     bool              m_useHttps = false;
     quint16           m_port     = 9090;
+    int               m_streamSlotOverride = 0;
 };

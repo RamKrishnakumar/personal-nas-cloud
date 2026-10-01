@@ -4,10 +4,16 @@
 #include <QSslConfiguration>
 #include <QTcpServer>
 
+#include <memory>
+
+#include "http/Connection.h"
+#include "http/HardwareTier.h"
+
 class QThread;
 
 namespace http {
 
+class AdmissionControl;
 class Router;
 class Worker;
 
@@ -55,6 +61,34 @@ public:
     void setWorkerCount(int count);
     int  workerCount() const;
 
+    /**
+     * @brief Applies a detected or user-overridden hardware profile.
+     *
+     * Sets worker count, stream slots and read chunk size together, because they
+     * are one trade-off rather than three: larger reads are only the right choice
+     * because the number of concurrent streams is bounded.
+     *
+     * Must be called before listen().
+     */
+    void setHardwareProfile(const HardwareProfile& profile);
+    const HardwareProfile& hardwareProfile() const { return m_profile; }
+
+    /** Concurrent metered transfers across all workers. */
+    int activeStreams() const;
+
+    /**
+     * @brief Overrides per-connection timeouts and buffer sizes.
+     *
+     * setHardwareProfile() already sets the chunk size, so this is for the
+     * remaining knobs — timeouts in particular, which tests need to shorten.
+     * Must be called before listen().
+     */
+    void setConnectionLimits(const ConnectionLimits& limits);
+    const ConnectionLimits& connectionLimits() const { return m_limits; }
+
+    /** The shared admission controller, or null before a profile is applied. */
+    AdmissionControl* admissionControl() const { return m_admission.get(); }
+
     /** Enables TLS for subsequent connections. Must be set before listen(). */
     void setTlsConfiguration(const QSslConfiguration& configuration);
     void clearTlsConfiguration();
@@ -86,6 +120,10 @@ private:
     Worker* chooseWorker() const;
 
     Router* m_router = nullptr;
+
+    std::unique_ptr<AdmissionControl> m_admission;
+    HardwareProfile                   m_profile;
+    ConnectionLimits                  m_limits;
 
     QList<QThread*> m_threads;
     QList<Worker*>  m_workers;

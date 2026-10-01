@@ -4,10 +4,13 @@
 #include <QSet>
 #include <QSslConfiguration>
 
+#include "http/Connection.h"
+
 class QTcpSocket;
 
 namespace http {
 
+class AdmissionControl;
 class Connection;
 class Router;
 
@@ -26,7 +29,10 @@ class Worker : public QObject
     Q_OBJECT
 
 public:
-    explicit Worker(Router* router, QObject* parent = nullptr);
+    Worker(Router* router,
+           AdmissionControl* admission,
+           const ConnectionLimits& limits,
+           QObject* parent = nullptr);
     ~Worker() override;
 
     /** Live connection count. Safe to read from any thread. */
@@ -52,7 +58,9 @@ public slots:
 private:
     void registerConnection(QTcpSocket* socket);
 
-    Router*             m_router = nullptr;
+    Router*             m_router    = nullptr;
+    AdmissionControl*   m_admission = nullptr;
+    ConnectionLimits    m_limits;
     QSet<Connection*>   m_connections;
     mutable QAtomicInt  m_connectionCount;
 };

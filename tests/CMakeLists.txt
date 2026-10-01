@@ -19,7 +19,7 @@ function(nestdrive_add_test suite)
 endfunction()
 
 # Pure parsing and path logic — no Qt6::Sql, so no driver plugin to deploy.
-foreach(suite rangeparser pathresolver requestparser)
+foreach(suite rangeparser pathresolver requestparser admissioncontrol hardwaretier)
     nestdrive_add_test(${suite} LIBRARIES nestdrive_http)
 endforeach()
 
@@ -27,3 +27,4 @@ nestdrive_add_test(database LIBRARIES nestdrive_db)
 
 # Integration: real sockets against the worker pool.
 nestdrive_add_test(httpserver LIBRARIES nestdrive_http)
+nestdrive_add_test(admissionserver LIBRARIES nestdrive_http)

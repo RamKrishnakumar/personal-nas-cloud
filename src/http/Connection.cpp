@@ -60,10 +60,16 @@ QByteArray makeETag(const QFileInfo& info)
 
 namespace http {
 
-Connection::Connection(QTcpSocket* socket, Router* router, QObject* parent)
+Connection::Connection(QTcpSocket*             socket,
+                       Router*                 router,
+                       AdmissionControl*       admission,
+                       const ConnectionLimits& limits,
+                       QObject*                parent)
     : QObject(parent)
     , m_socket(socket)
     , m_router(router)
+    , m_admission(admission)
+    , m_limits(limits)
 {
     m_socket->setParent(this);
 
@@ -81,7 +87,31 @@ Connection::Connection(QTcpSocket* socket, Router* router, QObject* parent)
 
     m_idleTimer.setSingleShot(true);
     connect(&m_idleTimer, &QTimer::timeout, this, &Connection::onIdleTimeout);
-    m_idleTimer.start(IdleTimeoutMs);
+    m_idleTimer.start(m_limits.idleTimeoutMs);
+
+    // Separate from the idle timer because the two watch different things: idle
+    // means "connected but asking nothing", stall means "mid-transfer and not
+    // draining". A stalled stream looks busy to the idle timer and would never be
+    // reclaimed by it.
+    m_stallTimer.setSingleShot(true);
+    connect(&m_stallTimer, &QTimer::timeout, this, &Connection::onStallTimeout);
+
+    m_admissionTimer.setSingleShot(false);
+    connect(&m_admissionTimer, &QTimer::timeout, this, &Connection::retryAdmission);
+
+    m_admissionDeadline.setSingleShot(true);
+    connect(&m_admissionDeadline, &QTimer::timeout, this, [this]() {
+        m_admissionTimer.stop();
+        if (m_state != State::AwaitingAdmission)
+            return;
+
+        // Honest refusal with a retry hint. The client is told to come back
+        // rather than left waiting, and step 11's interface turns this into a
+        // visible "waiting for a free transfer slot" rather than a dead page.
+        m_state = State::ReadingHeaders;
+        send(503, "text/plain; charset=utf-8", "Server busy — too many transfers",
+             "Retry-After: 5\r\n");
+    });
 
     // TLS buffers the first request during the handshake, so bytes can already be
     // waiting by the time we get here. Without this, such a request is only
@@ -113,7 +143,7 @@ void Connection::onReadyRead()
     if (m_state == State::Closing)
         return;
 
-    m_idleTimer.start(IdleTimeoutMs);
+    m_idleTimer.start(m_limits.idleTimeoutMs);
     m_inBuffer += m_socket->readAll();
 
     if (m_state == State::ReadingHeaders)
@@ -141,7 +171,7 @@ void Connection::processBuffer()
         m_request   = result.request;
         m_keepAlive = m_request.keepAlive;
 
-        if (++m_requestsServed >= MaxRequestsPerConnection)
+        if (++m_requestsServed >= m_limits.maxRequestsPerConnection)
             m_keepAlive = false;
 
         // No endpoint accepts a body yet. Draining one would be the alternative,
@@ -236,15 +266,70 @@ void Connection::sendFile(const QString& filesystemPath, bool forceDownload)
     m_responseStarted = true;
 
     const QFileInfo info(filesystemPath);
-    const qint64    fileSize = info.size();
-    const QByteArray etag    = makeETag(info);
+    const QByteArray etag = makeETag(info);
 
     // ── 304: the client already holds this exact file ─────────────────────
+    // Answered before admission on purpose. It transfers no body, so making it
+    // wait for a slot would penalise exactly the clients being most efficient.
     if (m_request.header("if-none-match") == QByteArrayView(etag)) {
         send(304, {}, {}, "ETag: " + etag + "\r\n"
                           "Cache-Control: private, max-age=3600\r\n");
         return;
     }
+
+    // HEAD sends no body, so it consumes no bandwidth and needs no slot.
+    if (m_suppressBody || !m_admission) {
+        beginFileResponse(filesystemPath, forceDownload);
+        return;
+    }
+
+    AdmissionResult admitted = m_admission->request(
+        peerAddress().toUtf8(), filesystemPath, info.size());
+
+    if (admitted.outcome == Admission::AtCapacity) {
+        // Queue rather than refuse outright. A visible wait reads as a working
+        // system; an immediate error reads as a broken one.
+        m_state                = State::AwaitingAdmission;
+        m_pendingPath          = filesystemPath;
+        m_pendingForceDownload = forceDownload;
+        m_idleTimer.stop();              // Waiting is not idling.
+        m_admissionTimer.start(m_limits.admissionRetryMs);
+        m_admissionDeadline.start(m_limits.admissionWaitMs);
+        return;
+    }
+
+    m_slot = std::move(admitted.slot);    // Empty after a bypass; held otherwise.
+    beginFileResponse(filesystemPath, forceDownload);
+}
+
+void Connection::retryAdmission()
+{
+    if (m_state != State::AwaitingAdmission) {
+        m_admissionTimer.stop();
+        return;
+    }
+
+    AdmissionResult admitted = m_admission->request(
+        peerAddress().toUtf8(), m_pendingPath, QFileInfo(m_pendingPath).size());
+
+    if (admitted.outcome == Admission::AtCapacity)
+        return;                           // Keep waiting until the deadline.
+
+    m_admissionTimer.stop();
+    m_admissionDeadline.stop();
+
+    m_slot  = std::move(admitted.slot);
+    m_state = State::ReadingHeaders;       // beginFileResponse sets Streaming.
+    beginFileResponse(m_pendingPath, m_pendingForceDownload);
+}
+
+void Connection::beginFileResponse(const QString& filesystemPath, bool forceDownload)
+{
+    m_responseStarted = true;
+
+    const QFileInfo info(filesystemPath);
+    const qint64    fileSize = info.size();
+    const QByteArray etag    = makeETag(info);
 
     auto* file = new QFile(filesystemPath);
     if (!file->open(QIODevice::ReadOnly)) {
@@ -312,6 +397,9 @@ void Connection::sendFile(const QString& filesystemPath, bool forceDownload)
     m_fileRemaining = length;
     m_state         = State::Streaming;
 
+    m_idleTimer.stop();                   // Streaming, not idle.
+    m_stallTimer.start(m_limits.stallTimeoutMs);
+
     pumpFile();
 }
 
@@ -320,8 +408,8 @@ void Connection::pumpFile()
     // Back-pressure: stop reading once enough is queued on the socket. Without
     // this, a fast disk and a slow client grow the write buffer without bound -
     // the failure mode that matters most on a phone over mobile data.
-    while (m_fileRemaining > 0 && m_socket->bytesToWrite() < WriteHighWaterMark) {
-        const qint64     wanted = qMin(ReadChunkSize, m_fileRemaining);
+    while (m_fileRemaining > 0 && m_socket->bytesToWrite() < m_limits.writeHighWaterMark) {
+        const qint64     wanted = qMin(m_limits.readChunkSize, m_fileRemaining);
         const QByteArray chunk  = m_file->read(wanted);
 
         if (chunk.isEmpty()) {
@@ -344,9 +432,24 @@ void Connection::pumpFile()
         finishResponse();
 }
 
+void Connection::onStallTimeout()
+{
+    if (m_state != State::Streaming)
+        return;
+
+    // The client stopped draining. This is the case a FIN never arrives for — a
+    // phone leaving coverage keeps the socket nominally connected indefinitely.
+    // Abandoning it is what returns the stream slot; without this the pool would
+    // be consumed permanently by clients that are already gone.
+    qDebug() << "[HTTP] Stream stalled for" << peerAddress() << "— abandoning.";
+    closeNow();
+}
+
 void Connection::onBytesWritten()
 {
     if (m_state == State::Streaming) {
+        // Progress was made, so restart the stall countdown.
+        m_stallTimer.start(m_limits.stallTimeoutMs);
         pumpFile();
         return;
     }
@@ -362,6 +465,14 @@ void Connection::finishResponse()
     m_file          = nullptr;
     m_fileRemaining = 0;
 
+    m_stallTimer.stop();
+
+    // Released as soon as the transfer ends, not when the connection closes. With
+    // keep-alive a client may hold the socket open for another fifteen seconds,
+    // and holding a slot through that idle time would waste a third of a small
+    // pool.
+    m_slot.release();
+
     if (!m_keepAlive) {
         m_state = State::Closing;
         if (m_socket->bytesToWrite() == 0)
@@ -370,7 +481,7 @@ void Connection::finishResponse()
     }
 
     m_state = State::ReadingHeaders;
-    m_idleTimer.start(IdleTimeoutMs);
+    m_idleTimer.start(m_limits.idleTimeoutMs);
 
     // A pipelined request may already be sitting in the buffer. Nothing will
     // wake us for bytes that arrived before the previous response was written,
@@ -383,10 +494,17 @@ void Connection::closeNow()
 {
     m_state = State::Closing;
     m_idleTimer.stop();
+    m_stallTimer.stop();
+    m_admissionTimer.stop();
+    m_admissionDeadline.stop();
 
     delete m_file;
     m_file          = nullptr;
     m_fileRemaining = 0;
+
+    // The destructor would do this too; doing it here means the slot is free
+    // before deleteLater() actually runs, which can be a full event-loop turn.
+    m_slot.release();
 
     m_socket->abort();      // Immediate: no lingering half-written response.
     emit closed();

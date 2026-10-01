@@ -46,9 +46,14 @@ void closeRawDescriptor(qintptr descriptor)
 
 namespace http {
 
-Worker::Worker(Router* router, QObject* parent)
+Worker::Worker(Router* router,
+               AdmissionControl* admission,
+               const ConnectionLimits& limits,
+               QObject* parent)
     : QObject(parent)
     , m_router(router)
+    , m_admission(admission)
+    , m_limits(limits)
 {
 }
 
@@ -128,7 +133,7 @@ void Worker::adoptDescriptor(qintptr descriptor,
 
 void Worker::registerConnection(QTcpSocket* socket)
 {
-    auto* connection = new Connection(socket, m_router, this);
+    auto* connection = new Connection(socket, m_router, m_admission, m_limits, this);
 
     m_connections.insert(connection);
     m_connectionCount.storeRelaxed(m_connections.size());

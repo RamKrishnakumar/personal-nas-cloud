@@ -1,5 +1,6 @@
 #include "http/HttpServer.h"
 
+#include "http/AdmissionControl.h"
 #include "http/Worker.h"
 
 #include <QDebug>
@@ -49,6 +50,10 @@ HttpServer::HttpServer(Router* router, QObject* parent)
     , m_router(router)
     , m_workerCount(defaultWorkerCount())
 {
+    // A profile is in place from the start so the server is usable without an
+    // explicit call; MainWindow replaces it with a detected one.
+    setHardwareProfile(HardwareProfile{});
+
     // Qt's own backlog guard would hold descriptors in an internal queue rather
     // than refusing them. The explicit check in incomingConnection() is what
     // enforces MaxConnections, so this is set high enough to stay out of the way.
@@ -119,6 +124,38 @@ void HttpServer::stop()
     stopWorkers();
 }
 
+void HttpServer::setHardwareProfile(const HardwareProfile& profile)
+{
+    Q_ASSERT(!isListening());
+
+    m_profile     = profile;
+    m_workerCount = std::clamp(profile.workerThreads, 1, 16);
+
+    m_limits.readChunkSize = profile.readChunkSize;
+
+    // Rebuilt rather than resized: a live AdmissionControl may be holding slots,
+    // and changing the ceiling underneath them would make the counts meaningless.
+    m_admission = std::make_unique<AdmissionControl>(profile.streamSlots);
+}
+
+void HttpServer::setConnectionLimits(const ConnectionLimits& limits)
+{
+    Q_ASSERT(!isListening());
+
+    const qint64 chunkFromProfile = m_limits.readChunkSize;
+    m_limits = limits;
+
+    // The chunk size belongs to the hardware profile, which is the authority on
+    // how much to read at once. Letting it be overwritten here would silently
+    // undo setHardwareProfile() depending on call order.
+    m_limits.readChunkSize = chunkFromProfile;
+}
+
+int HttpServer::activeStreams() const
+{
+    return m_admission ? m_admission->activeStreams() : 0;
+}
+
 void HttpServer::startWorkers()
 {
     if (!m_workers.isEmpty())
@@ -131,7 +168,7 @@ void HttpServer::startWorkers()
         // No parent: a QObject cannot be moved to another thread while it has a
         // parent living in this one. The thread owns it instead, via deleteLater
         // below.
-        auto* worker = new Worker(m_router);
+        auto* worker = new Worker(m_router, m_admission.get(), m_limits);
         worker->moveToThread(thread);
 
         connect(thread, &QThread::finished, worker, &QObject::deleteLater);
