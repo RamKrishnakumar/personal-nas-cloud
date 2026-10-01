@@ -237,7 +237,7 @@ QString FileRouter::buildListingHtml(const QString& directoryPath,
         // Preview URL for the overlay. Opening a photo previously downloaded the
         // original — megabytes to look at one phone snapshot. The Download button
         // still points at "u", so nothing is lost.
-        if (!isVideo && m_thumbnails) {
+        if (!isVideo && m_thumbnails && media::ThumbnailCache::isSupportedImage(entry.fileName())) {
             item[QStringLiteral("p")] = buildThumbnailUrl(entry, url, media::ThumbTier::Medium);
         }
 
@@ -272,6 +272,7 @@ font-size:2.5rem;background:#0d1117;overflow:hidden}
 text-overflow:ellipsis;color:#e5e7eb}
 .info small{font-size:.68rem;color:#4b5563}
 .empty{padding:40px;text-align:center;color:#4b5563;font-size:.9rem}
+.noprev{font-size:2.2rem;opacity:.55}
 #ov{display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.92);
 flex-direction:column;align-items:center;justify-content:center;padding:20px}
 #ov.open{display:flex}
@@ -330,18 +331,28 @@ font-weight:600;cursor:pointer;text-decoration:none}
             html += QStringLiteral("<div class='card' data-midx='%1'><div class='thumb'>")
                         .arg(mediaIndexPosition++);
             if (isImage) {
-                // The grid points at a 320 px thumbnail, not the original. This is
-                // the change that turns a sixty-photo folder from roughly 300 MB of
-                // transfer into a couple of megabytes; loading="lazy" only ever
-                // deferred that cost rather than removing it.
-                const QString source = m_thumbnails
-                    ? escapeHtml(buildThumbnailUrl(entry, base + encodeSegment(name),
-                                                   media::ThumbTier::Small))
-                    : link;
+                // Only ask for a thumbnail of something Qt can actually decode.
+                // HEIC is the case that matters: it is an image by MIME type, but
+                // no Qt image plugin reads it, so requesting one would cost a
+                // round trip per file and end in a broken-image icon.
+                const bool decodable =
+                    m_thumbnails && media::ThumbnailCache::isSupportedImage(name);
 
-                html += QStringLiteral("<img src='%1' alt='%2' loading='lazy' "
-                                       "decoding='async' width='160' height='110'>")
-                            .arg(source, safeName);
+                if (decodable) {
+                    // The grid points at a 320 px thumbnail, not the original. This
+                    // is what turns a sixty-photo folder from roughly 300 MB of
+                    // transfer into a couple of megabytes; loading="lazy" only ever
+                    // deferred that cost rather than removing it.
+                    html += QStringLiteral("<img src='%1' alt='%2' loading='lazy' "
+                                           "decoding='async' width='160' height='110'>")
+                                .arg(escapeHtml(buildThumbnailUrl(
+                                         entry, base + encodeSegment(name),
+                                         media::ThumbTier::Small)),
+                                     safeName);
+                } else {
+                    // Still openable and downloadable, just not previewable here.
+                    html += QStringLiteral("<span class='noprev'>🖼</span>");
+                }
             } else {
                 html += QStringLiteral("🎬");
             }

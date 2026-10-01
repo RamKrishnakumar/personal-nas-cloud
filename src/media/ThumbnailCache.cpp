@@ -107,11 +107,20 @@ ThumbnailCache::ThumbnailCache(db::Database* database,
     if (writable.contains(QByteArrayLiteral("webp"))) {
         m_outputFormat = QByteArrayLiteral("webp");
         m_quality      = 72;
+        qInfo() << "[Thumbs] Using WebP.";
     } else {
         m_outputFormat = QByteArrayLiteral("jpeg");
         m_quality      = 80;
-        qInfo() << "[Thumbs] WebP writer unavailable; using JPEG.";
+        qInfo() << "[Thumbs] WebP writer unavailable; using JPEG (about 30% larger). "
+                   "Install Qt's \"Qt Image Formats\" component to enable WebP, "
+                   "then delete this cache directory so thumbnails are rebuilt.";
     }
+
+    // Logged because it determines which files get a thumbnail at all. HEIC is the
+    // common surprise: it is an image, but no Qt plugin reads it without an
+    // additional decoder.
+    qInfo() << "[Thumbs] Readable formats:"
+            << QImageReader::supportedImageFormats().join(' ').constData();
 
     m_pool = new QThreadPool(this);
     m_pool->setMaxThreadCount(std::max(1, generatorThreads));
