@@ -103,6 +103,18 @@ add_library(nestdrive_handlers STATIC
 
 target_link_libraries(nestdrive_handlers PUBLIC nestdrive_http nestdrive_media)
 
+# Web interface, embedded so the binary needs no companion files. Plain ES modules
+# with no bundler: a build step would add a Node toolchain for minification that
+# gzip already largely covers, and type checking we are not using.
+qt_add_resources(nestdrive_handlers "nestdrive_web"
+    PREFIX "/web"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/web"
+    FILES
+        web/index.html
+        web/app.js
+        web/app.css
+)
+
 # ── Source files ─────────────────────────────────────────────────────────────
 qt_add_executable(MyNAS
     src/main.cpp

@@ -45,8 +45,19 @@ private:
                          const http::Request& request,
                          const QByteArray& remainder);
 
-    QString buildListingHtml(const QString& directoryPath,
-                             const QString& urlPath) const;
+    /**
+     * @brief Serves /api/list — one page of a directory, as JSON.
+     *
+     * Replaces server-rendered HTML. A 5000-file folder is about 1.5 MB of markup
+     * and 5000 DOM nodes for the browser to build; the same listing is roughly
+     * 300 KB of JSON, around 60 KB gzipped, and the client renders only the rows
+     * on screen.
+     */
+    void handleListApi(http::Connection& connection, const http::Request& request);
+
+    /** Serves the single-page application shell and its assets from Qt resources. */
+    void handleStaticAsset(http::Connection& connection, const QByteArray& assetName);
+    void sendApplicationShell(http::Connection& connection);
 
     QString                m_nasRoot;
     media::ThumbnailCache* m_thumbnails = nullptr;

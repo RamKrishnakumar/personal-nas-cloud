@@ -299,30 +299,28 @@ Response TestHttpServer::request(const QByteArray& raw)
 
 void TestHttpServer::servesDirectoryListing()
 {
+    // Since step 11 a directory returns the application shell, not a rendered
+    // listing. The contents arrive separately from /api/list, which tst_listapi
+    // covers; here the only question is that the shell is served and framed.
     const Response r = request("GET /Album HTTP/1.1\r\nHost: h\r\n\r\n");
 
     QCOMPARE(r.status, 200);
     QVERIFY(r.header("content-type").startsWith("text/html"));
-    QCOMPARE(r.header("cache-control"), QByteArray("no-store"));
-    QVERIFY(r.body.contains("clip.mp4"));
+    QVERIFY(r.body.contains("/_static/app.js"));
     QCOMPARE(r.body.size(), r.header("content-length").toLongLong());
 }
 
 void TestHttpServer::escapesFilenamesInListing()
 {
+    // Filenames no longer appear in any server-generated markup, which is what
+    // removed this class of bug rather than escaping it away. The shell is static,
+    // so it must not mention directory contents at all; names reach the client as
+    // JSON data and are inserted with textContent.
     const Response r = request("GET /Album HTTP/1.1\r\nHost: h\r\n\r\n");
     QCOMPARE(r.status, 200);
 
-    // The raw characters must never reach the page: unescaped they break the
-    // generated media index and provide an injection point.
-    QVERIFY2(r.body.contains("A&amp;B"), "Ampersand in a filename was not escaped");
-    QVERIFY2(r.body.contains("&#39;"),   "Apostrophe in a filename was not escaped");
-
-#ifndef Q_OS_WIN
-    QVERIFY2(!r.body.contains("<b>"), "Filename markup was not escaped");
-    QVERIFY(r.body.contains("&lt;b&gt;"));
-    QVERIFY(r.body.contains("&quot;"));
-#endif
+    QVERIFY2(!r.body.contains("A&B"),  "The shell must not embed filenames");
+    QVERIFY2(!r.body.contains("clip.mp4"), "The shell must not embed filenames");
 }
 
 void TestHttpServer::servesWholeFileWithExactLength()

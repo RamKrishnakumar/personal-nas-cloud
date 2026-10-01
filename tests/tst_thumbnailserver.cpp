@@ -5,6 +5,9 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QImage>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QThread>
@@ -274,13 +277,36 @@ void TestThumbnailServer::mediumTierIsServed()
 
 void TestThumbnailServer::listingPointsTheGridAtThumbnails()
 {
-    const Response r = request("GET /Album HTTP/1.1\r\nHost: h\r\nConnection: close\r\n\r\n");
+    // The listing is JSON from step 11 onwards. Thumbnail URLs are still produced
+    // server-side so the client never derives a cache key, and both tiers must be
+    // offered: "t" for the grid, "p" for the preview overlay.
+    const Response r = request("GET /api/list?path=/Album HTTP/1.1\r\n"
+                               "Host: h\r\nConnection: close\r\n\r\n");
 
     QCOMPARE(r.status, 200);
-    QVERIFY2(r.body.contains("/_thumb/s/"),
-             "The grid is still linking originals rather than thumbnails");
-    QVERIFY2(r.body.contains("\"p\":"),
-             "The media index carries no preview URL for the overlay");
+
+    const QJsonArray entries = QJsonDocument::fromJson(r.body)
+                                   .object()
+                                   .value(QStringLiteral("entries")).toArray();
+    QVERIFY(!entries.isEmpty());
+
+    int withThumbnails = 0;
+    for (const QJsonValue& value : entries) {
+        const QJsonObject entry = value.toObject();
+        if (entry.value(QStringLiteral("k")).toString() != QLatin1String("image"))
+            continue;
+
+        const QString grid    = entry.value(QStringLiteral("t")).toString();
+        const QString preview = entry.value(QStringLiteral("p")).toString();
+
+        QVERIFY2(grid.startsWith(QLatin1String("/_thumb/s/")),
+                 "The grid is still pointed at the original rather than a thumbnail");
+        QVERIFY2(preview.startsWith(QLatin1String("/_thumb/m/")),
+                 "No medium preview URL for the overlay");
+        ++withThumbnails;
+    }
+
+    QVERIFY2(withThumbnails > 0, "No image entries were returned, so nothing was checked");
 }
 
 void TestThumbnailServer::manyColdMissesAreAllServed()
