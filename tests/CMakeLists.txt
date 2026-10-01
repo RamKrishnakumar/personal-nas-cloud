@@ -1,12 +1,14 @@
 find_package(Qt6 REQUIRED COMPONENTS Test)
 
-# Each pure module gets its own test executable, so a failure names the module
-# it came from without reading the log.
-foreach(suite rangeparser pathresolver)
+# One executable per module, so a failure names the module it came from without
+# reading the log. The library each suite links is the only difference.
+function(nestdrive_add_test suite)
+    cmake_parse_arguments(ARG "" "" "LIBRARIES" ${ARGN})
+
     qt_add_executable(tst_${suite} tst_${suite}.cpp)
 
     target_link_libraries(tst_${suite} PRIVATE
-        nestdrive_http
+        ${ARG_LIBRARIES}
         Qt6::Test
     )
 
@@ -14,4 +16,11 @@ foreach(suite rangeparser pathresolver)
     set_target_properties(tst_${suite} PROPERTIES WIN32_EXECUTABLE FALSE)
 
     add_test(NAME ${suite} COMMAND tst_${suite})
+endfunction()
+
+# Pure parsing and path logic — no Qt6::Sql, so no driver plugin to deploy.
+foreach(suite rangeparser pathresolver requestparser)
+    nestdrive_add_test(${suite} LIBRARIES nestdrive_http)
 endforeach()
+
+nestdrive_add_test(database LIBRARIES nestdrive_db)

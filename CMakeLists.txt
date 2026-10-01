@@ -11,7 +11,7 @@ set(CMAKE_AUTOUIC ON)
 # NetworkAuth is NOT needed here.
 # Qt6::Network covers QTcpServer, QTcpSocket, QSslSocket, QSslConfiguration.
 # Qt links OpenSSL automatically when Network is requested on Windows/Linux.
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network)
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network Sql)
 
 # ── Pure logic library ───────────────────────────────────────────────────────
 # Parsing, path resolution and (later) permission resolution live here. These
@@ -23,6 +23,8 @@ add_library(nestdrive_http STATIC
     src/http/RangeParser.cpp
     src/http/PathResolver.h
     src/http/PathResolver.cpp
+    src/http/RequestParser.h
+    src/http/RequestParser.cpp
 )
 
 target_link_libraries(nestdrive_http PUBLIC Qt6::Core)
@@ -31,9 +33,28 @@ target_include_directories(nestdrive_http PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+# ── Persistence library ──────────────────────────────────────────────────────
+# Separate from nestdrive_http so the parsing tests do not drag in Qt6::Sql and
+# its driver plugin.
+add_library(nestdrive_db STATIC
+    src/db/Database.h
+    src/db/Database.cpp
+    src/db/Migrations.h
+    src/db/Migrations.cpp
+)
+
+target_link_libraries(nestdrive_db PUBLIC Qt6::Core Qt6::Sql)
+
+target_include_directories(nestdrive_db PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
 # ── Source files ─────────────────────────────────────────────────────────────
 qt_add_executable(MyNAS
     src/main.cpp
+
+    src/app/Paths.h
+    src/app/Paths.cpp
 
     src/ui/MainWindow.h
     src/ui/MainWindow.cpp
@@ -63,9 +84,11 @@ target_include_directories(MyNAS PRIVATE
 # next to the exe — Qt's windeployqt does this automatically.
 target_link_libraries(MyNAS PRIVATE
     nestdrive_http
+    nestdrive_db
     Qt6::Core
     Qt6::Widgets
     Qt6::Network
+    Qt6::Sql
 )
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
