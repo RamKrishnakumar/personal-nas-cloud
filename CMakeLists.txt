@@ -46,6 +46,8 @@ add_library(nestdrive_http STATIC
     src/http/HardwareTier.cpp
     src/http/AdmissionControl.h
     src/http/AdmissionControl.cpp
+    src/http/Cookies.h
+    src/http/Cookies.cpp
 
     # Transport: threading, sockets, TLS, framing and streaming.
     src/http/Router.h
@@ -83,6 +85,27 @@ target_include_directories(nestdrive_db PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+# ── Authentication library ───────────────────────────────────────────────────
+# Separate from the HTTP layer because none of it knows about sockets: password
+# hashing, session bookkeeping and rate limiting are all testable with a temporary
+# database and no server at all.
+#
+# Qt6::Network is here for QPasswordDigestor, which is where Qt keeps PBKDF2. It is
+# an odd home for it, but using Qt's implementation beats hand-rolling the one kind
+# of code that fails silently when it is wrong.
+add_library(nestdrive_auth STATIC
+    src/auth/PasswordHash.h
+    src/auth/PasswordHash.cpp
+    src/auth/LoginRateLimiter.h
+    src/auth/LoginRateLimiter.cpp
+    src/auth/SessionStore.h
+    src/auth/SessionStore.cpp
+    src/auth/UserStore.h
+    src/auth/UserStore.cpp
+)
+
+target_link_libraries(nestdrive_auth PUBLIC nestdrive_db Qt6::Core Qt6::Network)
+
 # ── Media library ────────────────────────────────────────────────────────────
 # Image decoding, so Qt6::Gui lives here rather than in the transport layer.
 add_library(nestdrive_media STATIC
@@ -101,9 +124,15 @@ target_link_libraries(nestdrive_media PUBLIC nestdrive_db Qt6::Core Qt6::Gui)
 add_library(nestdrive_handlers STATIC
     src/handlers/FileRouter.h
     src/handlers/FileRouter.cpp
+    src/handlers/AuthHandler.h
+    src/handlers/AuthHandler.cpp
 )
 
-target_link_libraries(nestdrive_handlers PUBLIC nestdrive_http nestdrive_media)
+target_link_libraries(nestdrive_handlers PUBLIC
+    nestdrive_http
+    nestdrive_media
+    nestdrive_auth
+)
 
 # Web interface, embedded so the binary needs no companion files. Plain ES modules
 # with no bundler: a build step would add a Node toolchain for minification that
@@ -115,6 +144,7 @@ qt_add_resources(nestdrive_handlers "nestdrive_web"
         web/index.html
         web/app.js
         web/app.css
+        web/login.html
 )
 
 # ── Source files ─────────────────────────────────────────────────────────────
@@ -153,6 +183,7 @@ target_include_directories(MyNAS PRIVATE
 target_link_libraries(MyNAS PRIVATE
     nestdrive_handlers
     nestdrive_media
+    nestdrive_auth
     nestdrive_http
     nestdrive_db
     Qt6::Core

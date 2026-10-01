@@ -102,10 +102,37 @@ public:
                QObject*                parent = nullptr);
     ~Connection() override;
 
+    /**
+     * @brief Largest request body accepted.
+     *
+     * The only bodies v0.6 handles are login credentials, which are a few hundred
+     * bytes. A generous cap still refuses a client that announces a gigabyte, which
+     * would otherwise be buffered in memory before any handler saw it. Uploads in
+     * v0.8 will stream to disk instead of raising this.
+     */
+    static constexpr qint64 MaxRequestBodyBytes = 64 * 1024;
+
     /** The request currently being handled. Valid only inside Router::handle(). */
     const Request& request() const { return m_request; }
 
+    /**
+     * @brief Body of the current request, empty when it had none.
+     *
+     * Fully buffered before the router is called, so a handler never has to deal
+     * with a partial body.
+     */
+    const QByteArray& requestBody() const { return m_requestBody; }
+
     QString peerAddress() const;
+
+    /**
+     * @brief Whether this connection is TLS-protected.
+     *
+     * Drives the `Secure` flag on the session cookie. Setting that flag over plain
+     * HTTP would make the cookie unusable; omitting it over HTTPS would let the
+     * browser send the session over a downgraded connection.
+     */
+    bool isEncrypted() const;
 
     // ── Response API, called by a Router ──────────────────────────────────
 
@@ -146,7 +173,14 @@ signals:
     void closed();
 
 private:
-    enum class State { ReadingHeaders, AwaitingAdmission, Deferred, Streaming, Closing };
+    enum class State {
+        ReadingHeaders,
+        ReadingBody,          ///< Head parsed, waiting for Content-Length bytes.
+        AwaitingAdmission,
+        Deferred,
+        Streaming,
+        Closing,
+    };
 
     void onReadyRead();
     void onBytesWritten();
@@ -155,6 +189,9 @@ private:
 
     /** Parses and dispatches as many whole requests as the buffer holds. */
     void processBuffer();
+
+    /** Hands the fully-read request to the router and checks it responded. */
+    void dispatchRequest();
 
     /** Asks for a slot and either begins streaming or starts waiting. */
     void beginFileResponse(const QString& filesystemPath, bool forceDownload);
@@ -180,6 +217,9 @@ private:
     QByteArray m_inBuffer;
     State      m_state = State::ReadingHeaders;
     Request    m_request;
+
+    QByteArray m_requestBody;
+    qint64     m_bodyExpected = 0;    ///< Bytes still needed while in ReadingBody.
 
     /**
      * Cache-Control for the file response being built.

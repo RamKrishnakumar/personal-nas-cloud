@@ -24,7 +24,14 @@ foreach(suite rangeparser pathresolver requestparser admissioncontrol hardwareti
     nestdrive_add_test(${suite} LIBRARIES nestdrive_http)
 endforeach()
 
+nestdrive_add_test(cookies LIBRARIES nestdrive_http)
+
 nestdrive_add_test(database LIBRARIES nestdrive_db)
+
+# Authentication: a temporary database, no server.
+foreach(suite passwordhash loginratelimiter sessionstore userstore)
+    nestdrive_add_test(${suite} LIBRARIES nestdrive_auth)
+endforeach()
 nestdrive_add_test(thumbnailcache LIBRARIES nestdrive_media)
 nestdrive_add_test(thumbnailscanner LIBRARIES nestdrive_media)
 
@@ -33,3 +40,4 @@ nestdrive_add_test(httpserver LIBRARIES nestdrive_handlers)
 nestdrive_add_test(admissionserver LIBRARIES nestdrive_handlers)
 nestdrive_add_test(thumbnailserver LIBRARIES nestdrive_handlers)
 nestdrive_add_test(listapi LIBRARIES nestdrive_handlers)
+nestdrive_add_test(authserver LIBRARIES nestdrive_handlers)

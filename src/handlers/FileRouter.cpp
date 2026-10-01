@@ -1,5 +1,6 @@
 #include "handlers/FileRouter.h"
 
+#include "handlers/AuthHandler.h"
 #include "http/Connection.h"
 #include "http/MimeType.h"
 #include "http/PathResolver.h"
@@ -145,6 +146,13 @@ void FileRouter::setNasRoot(const QString& nasRoot)
 
 void FileRouter::handle(http::Connection& connection, const http::Request& request)
 {
+    // Checked before the method filter below, because these are the only routes
+    // that accept anything other than GET and HEAD.
+    if (m_authentication && AuthHandler::handles(request.path)) {
+        m_authentication->handle(connection, request);
+        return;
+    }
+
     // No other method has a defined meaning here yet. Upload and delete arrive in
     // v0.8, behind the permission model.
     if (request.method != "GET" && request.method != "HEAD") {

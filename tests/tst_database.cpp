@@ -32,6 +32,7 @@ private slots:
     void foreignKeysAreEnforced();
     void roleConstraintIsEnforced();
     void cascadeDeleteRemovesDependents();
+    void upgradesAnOlderDatabaseInPlace();
     void newerSchemaIsRefused();
     void failedOpenLeavesDatabaseClosed();
     void twoInstancesDoNotShareConnections();
@@ -226,6 +227,48 @@ void TestDatabase::cascadeDeleteRemovesDependents()
     QVERIFY(query.exec(QStringLiteral("SELECT COUNT(*) FROM folder_perms")));
     QVERIFY(query.next());
     QCOMPARE(query.value(0).toInt(), 0);
+}
+
+void TestDatabase::upgradesAnOlderDatabaseInPlace()
+{
+    // Every other test here starts from an empty file, so none of them exercises the
+    // path a real installation takes: an existing database, with existing rows,
+    // meeting a build that added a column. Getting this wrong does not show up on a
+    // developer machine — only on somebody's actual data.
+    const QString path = freshPath(QStringLiteral("upgrade"));
+
+    {
+        db::Database database;
+        QVERIFY2(database.open(path), qPrintable(database.lastError()));
+
+        auto handle = database.lock();
+        QSqlQuery query(handle.connection());
+
+        // A row that must survive the upgrade.
+        QVERIFY(query.exec(QStringLiteral(
+            "INSERT INTO users (id, username, pw_hash, role, enabled, created_at) "
+            "VALUES (1, 'keepme', 'hash', 'admin', 1, 100)")));
+
+        // Wind the file back to version 2 by removing what version 3 added.
+        QVERIFY2(query.exec(QStringLiteral(
+                     "ALTER TABLE sessions DROP COLUMN idle_seconds")),
+                 qPrintable(query.lastError().text()));
+        QVERIFY(query.exec(QStringLiteral("PRAGMA user_version = 2")));
+    }
+
+    db::Database upgraded;
+    QVERIFY2(upgraded.open(path), qPrintable(upgraded.lastError()));
+    QCOMPARE(upgraded.schemaVersion(), db::CurrentSchemaVersion);
+
+    auto handle = upgraded.lock();
+    QSqlQuery query(handle.connection());
+
+    // The column is back, with the default the migration declared.
+    QVERIFY(query.exec(QStringLiteral("SELECT idle_seconds FROM sessions")));
+
+    QVERIFY(query.exec(QStringLiteral("SELECT username FROM users WHERE id = 1")));
+    QVERIFY2(query.next(), "The upgrade lost existing rows");
+    QCOMPARE(query.value(0).toString(), QStringLiteral("keepme"));
 }
 
 void TestDatabase::newerSchemaIsRefused()

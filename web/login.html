@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in — NestDrive</title>
+<link rel="stylesheet" href="/_static/app.css">
+<style>
+/* Scoped here rather than in app.css: the login page is the only thing that
+   needs a centred single-column layout, and app.css is sent with every folder. */
+.login-wrap {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+}
+.login-card {
+    width: 100%;
+    max-width: 340px;
+    background: #141a24;
+    border: 1px solid #243040;
+    border-radius: 12px;
+    padding: 28px 24px;
+}
+.login-card h1 { margin: 0 0 4px; font-size: 20px; }
+.login-card p.sub { margin: 0 0 22px; color: #7d8ba0; font-size: 13px; }
+.login-card label { display: block; font-size: 12px; color: #9aa7bb; margin-bottom: 6px; }
+.login-card input[type="text"],
+.login-card input[type="password"] {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px 12px;
+    margin-bottom: 16px;
+    background: #0d121a;
+    border: 1px solid #2a3647;
+    border-radius: 7px;
+    color: #e6edf6;
+    font-size: 14px;
+}
+.login-card input:focus { outline: none; border-color: #3b82f6; }
+.remember { display: flex; align-items: center; gap: 8px; margin-bottom: 18px; }
+.remember input { margin: 0; }
+.remember label { margin: 0; font-size: 13px; color: #c3cedd; }
+.login-card button {
+    width: 100%;
+    padding: 11px;
+    background: #2563eb;
+    border: 0;
+    border-radius: 7px;
+    color: #fff;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+}
+.login-card button:disabled { background: #2a3647; cursor: default; }
+.notice { margin-top: 16px; font-size: 13px; min-height: 18px; }
+.notice.error { color: #f87171; }
+.notice.working { color: #9aa7bb; }
+</style>
+</head>
+<body>
+<div class="login-wrap">
+  <form class="login-card" id="form" autocomplete="on">
+    <h1>NestDrive</h1>
+    <p class="sub">Sign in to reach your library.</p>
+
+    <label for="username">Username</label>
+    <input id="username" name="username" type="text" autocomplete="username"
+           autocapitalize="none" spellcheck="false" required>
+
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password"
+           autocomplete="current-password" required>
+
+    <div class="remember">
+      <input id="remember" name="remember" type="checkbox">
+      <label for="remember">Keep me signed in for 14 days</label>
+    </div>
+
+    <button id="submit" type="submit">Sign in</button>
+    <div class="notice" id="notice" role="status" aria-live="polite"></div>
+  </form>
+</div>
+
+<script type="module">
+const form     = document.getElementById('form');
+const notice   = document.getElementById('notice');
+const submit   = document.getElementById('submit');
+
+/** Where to go after signing in. */
+function destination() {
+    const next = new URLSearchParams(location.search).get('next');
+    // Only same-origin relative paths are honoured. Accepting an absolute URL here
+    // would turn the login page into an open redirect an attacker can point at
+    // their own site after a real sign-in.
+    if (next && next.startsWith('/') && !next.startsWith('//')) return next;
+    return '/';
+}
+
+function say(text, kind) {
+    notice.textContent = text;
+    notice.className = 'notice' + (kind ? ' ' + kind : '');
+}
+
+form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    submit.disabled = true;
+
+    // Verification is intentionally slow, so the wait needs explaining or it reads
+    // as a hung page.
+    say('Checking…', 'working');
+
+    try {
+        const response = await fetch('/api/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                username: document.getElementById('username').value,
+                password: document.getElementById('password').value,
+                remember: document.getElementById('remember').checked,
+            }),
+        });
+
+        if (response.ok) {
+            location.replace(destination());
+            return;
+        }
+
+        let message = 'Sign in failed.';
+        try {
+            const body = await response.json();
+            if (body && body.error) message = body.error;
+        } catch { /* Keep the generic message. */ }
+
+        if (response.status === 429) {
+            const wait = response.headers.get('Retry-After');
+            if (wait) message += ' (about ' + wait + ' seconds)';
+        }
+
+        say(message, 'error');
+        document.getElementById('password').value = '';
+    } catch {
+        say('Could not reach the server.', 'error');
+    } finally {
+        submit.disabled = false;
+    }
+});
+</script>
+</body>
+</html>

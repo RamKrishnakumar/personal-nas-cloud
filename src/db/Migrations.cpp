@@ -135,6 +135,22 @@ QStringList schemaVersion2()
     };
 }
 
+/**
+ * Schema version 3 — how long a session stays alive between uses.
+ *
+ * Sessions expire on idleness, and the window differs: twelve hours normally,
+ * fourteen days when the user asked to be remembered. Refreshing an expiry needs
+ * to know which window applies, and deriving it from `expires_at - created_at`
+ * only works until the first refresh. Storing it is the honest version.
+ */
+QStringList schemaVersion3()
+{
+    return {
+        QStringLiteral("ALTER TABLE sessions "
+                       "ADD COLUMN idle_seconds INTEGER NOT NULL DEFAULT 43200"),
+    };
+}
+
 /** Runs one statement, reporting the failing SQL rather than just the driver text. */
 bool runStatement(QSqlDatabase& connection, const QString& sql, QString* error)
 {
@@ -203,6 +219,9 @@ bool applyMigrations(QSqlDatabase& connection, QString* error)
             break;
         case 2:
             statements = schemaVersion2();
+            break;
+        case 3:
+            statements = schemaVersion3();
             break;
         default:
             if (error)

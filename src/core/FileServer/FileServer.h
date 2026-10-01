@@ -6,10 +6,17 @@
 
 #include <memory>
 
+namespace auth {
+class LoginRateLimiter;
+class SessionStore;
+class UserStore;
+}
 namespace db       { class Database; }
-namespace handlers { class FileRouter; }
+namespace handlers { class AuthHandler; class FileRouter; }
 namespace http     { class HttpServer; }
 namespace media    { class ThumbnailCache; class ThumbnailScanner; }
+
+class QTimer;
 
 /**
  * @class FileServer
@@ -97,6 +104,20 @@ public:
     void setThumbnailWarmupEnabled(bool enabled);
     bool thumbnailWarmupEnabled() const { return m_warmupEnabled; }
 
+    /**
+     * @brief Enables the login, logout and session endpoints.
+     *
+     * Must be called before start().
+     *
+     * @warning Step 13 only. Enabling this does not protect anything yet — every
+     *          other route is still served without a session. The gate that makes
+     *          authentication mean something is step 14.
+     */
+    void setAccountStore(db::Database* database);
+
+    /** Accounts on record, so the UI can tell whether anyone has been created. */
+    int accountCount() const;
+
 signals:
     void serverStarted(QString ip, quint16 port);
     void serverStopped();
@@ -105,6 +126,16 @@ private:
     std::unique_ptr<handlers::FileRouter>  m_router;
     std::unique_ptr<media::ThumbnailCache>   m_thumbnails;
     std::unique_ptr<media::ThumbnailScanner> m_scanner;
+
+    std::unique_ptr<auth::UserStore>        m_users;
+    std::unique_ptr<auth::SessionStore>     m_sessions;
+    std::unique_ptr<auth::LoginRateLimiter> m_limiter;
+    std::unique_ptr<handlers::AuthHandler>  m_authentication;
+
+    /// Retires expired sessions while the server runs. Startup is handled by
+    /// SessionStore's constructor; this covers a server left up for weeks.
+    std::unique_ptr<QTimer> m_sessionSweeper;
+
     std::unique_ptr<http::HttpServer>      m_server;
 
     QSslConfiguration m_sslConfiguration;

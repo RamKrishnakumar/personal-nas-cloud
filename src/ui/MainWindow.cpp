@@ -97,6 +97,12 @@ MainWindow::MainWindow(db::Database* database, QWidget* parent)
     // folder of photos usable over a slow link.
     m_fileServer->setThumbnailStore(m_database, app::paths::thumbnailDirectory());
 
+    // ── Accounts ──────────────────────────────────────────────────────────────
+    // Serves /login and the session endpoints. It does not yet protect anything:
+    // the gate that requires a session on every other route is step 14, and the
+    // first-run wizard that creates the admin account is step 16.
+    m_fileServer->setAccountStore(m_database);
+
     // ── Build UI ──────────────────────────────────────────────────────────────
     // Called last — all member objects must be initialized before UI is built
     // because setupUI() references m_fileServer and other members.

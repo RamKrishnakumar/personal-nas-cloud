@@ -1,5 +1,9 @@
 #include "core/FileServer/FileServer.h"
 
+#include "auth/LoginRateLimiter.h"
+#include "auth/SessionStore.h"
+#include "auth/UserStore.h"
+#include "handlers/AuthHandler.h"
 #include "handlers/FileRouter.h"
 #include "http/HardwareTier.h"
 #include "http/HttpServer.h"
@@ -15,6 +19,7 @@
 #include <QSslCertificate>
 #include <QSslKey>
 #include <QSslSocket>
+#include <QTimer>
 
 FileServer::FileServer(QObject* parent)
     : QObject(parent)
@@ -26,11 +31,17 @@ FileServer::FileServer(QObject* parent)
 FileServer::~FileServer()
 {
     // Explicit ordering: the worker threads must be joined before the router they
-    // hold a pointer to, and the router before the cache it points at.
+    // hold a pointer to, and the router before the things it points at.
     m_server.reset();
     m_router.reset();
     m_scanner.reset();      // Joins its thread before the cache it uses goes away.
     m_thumbnails.reset();
+
+    m_sessionSweeper.reset();
+    m_authentication.reset();   // Joins its hashing thread.
+    m_limiter.reset();
+    m_sessions.reset();
+    m_users.reset();
 }
 
 void FileServer::setThumbnailStore(db::Database* database, const QString& cacheDirectory)
@@ -56,6 +67,48 @@ void FileServer::setThumbnailStore(db::Database* database, const QString& cacheD
     qInfo() << "[Thumbs] Cache at" << cacheDirectory
             << "| format" << m_thumbnails->outputFormat()
             << "| generators" << detected.thumbnailThreads;
+}
+
+void FileServer::setAccountStore(db::Database* database)
+{
+    if (!database)
+        return;
+
+    m_users    = std::make_unique<auth::UserStore>(database);
+    m_sessions = std::make_unique<auth::SessionStore>(database);
+    m_limiter  = std::make_unique<auth::LoginRateLimiter>();
+
+    m_authentication = std::make_unique<handlers::AuthHandler>(
+        m_users.get(), m_sessions.get(), m_limiter.get());
+
+    m_router->setAuthHandler(m_authentication.get());
+
+    // A server left running for weeks would otherwise only ever sweep at startup.
+    // Hourly is far more often than needed for a handful of users, and costs one
+    // indexed delete.
+    m_sessionSweeper = std::make_unique<QTimer>();
+    m_sessionSweeper->setInterval(60 * 60 * 1000);
+    QObject::connect(m_sessionSweeper.get(), &QTimer::timeout, this, [this]() {
+        const int removed = m_sessions->sweepExpired();
+        if (removed > 0)
+            qInfo() << "[Auth] Retired" << removed << "expired sessions.";
+    });
+    m_sessionSweeper->start();
+
+    qInfo() << "[Auth] Accounts on record:" << m_users->count();
+
+    // Said plainly because it is the difference between "has a login page" and "is
+    // protected". Step 14 adds the gate that makes the session actually required.
+    if (m_users->count() == 0) {
+        qWarning() << "[Auth] No accounts exist yet. The login page is served, but "
+                      "no route requires a session — do not expose this beyond a "
+                      "trusted network.";
+    }
+}
+
+int FileServer::accountCount() const
+{
+    return m_users ? m_users->count() : 0;
 }
 
 void FileServer::setThumbnailWarmupEnabled(bool enabled)

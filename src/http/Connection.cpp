@@ -9,6 +9,7 @@
 #include <QDateTime>
 #include <QFile>
 #include <QFileInfo>
+#include <QSslSocket>
 #include <QTcpSocket>
 
 namespace {
@@ -140,6 +141,12 @@ QString Connection::peerAddress() const
     return m_socket->peerAddress().toString();
 }
 
+bool Connection::isEncrypted() const
+{
+    const auto* secure = qobject_cast<const QSslSocket*>(m_socket);
+    return secure && secure->isEncrypted();
+}
+
 void Connection::deferResponse()
 {
     m_responseStarted = true;
@@ -166,7 +173,9 @@ void Connection::onReadyRead()
     m_idleTimer.start(m_limits.idleTimeoutMs);
     m_inBuffer += m_socket->readAll();
 
-    if (m_state == State::ReadingHeaders)
+    // ReadingBody is included: a POST whose body arrives in a later packet than its
+    // headers would otherwise sit in the buffer until the idle timer closed it.
+    if (m_state == State::ReadingHeaders || m_state == State::ReadingBody)
         processBuffer();
 }
 
@@ -175,7 +184,24 @@ void Connection::processBuffer()
     // Loops because one read can contain several pipelined requests. Stops as
     // soon as a response begins streaming - the next request must wait until
     // this one's bytes are fully written, or the two would interleave.
-    while (m_state == State::ReadingHeaders && !m_inBuffer.isEmpty()) {
+    while ((m_state == State::ReadingHeaders || m_state == State::ReadingBody)
+           && !m_inBuffer.isEmpty()) {
+
+        // ── Finishing a body already in progress ──────────────────────────
+        if (m_state == State::ReadingBody) {
+            const qint64 available = qMin<qint64>(m_bodyExpected, m_inBuffer.size());
+            m_requestBody += m_inBuffer.left(qsizetype(available));
+            m_inBuffer.remove(0, qsizetype(available));
+            m_bodyExpected -= available;
+
+            if (m_bodyExpected > 0)
+                return;                              // Wait for the rest.
+
+            m_state = State::ReadingHeaders;
+            dispatchRequest();
+            continue;
+        }
+
         const ParseResult result = parseRequest(m_inBuffer);
 
         if (result.status == ParseStatus::Incomplete)
@@ -194,27 +220,41 @@ void Connection::processBuffer()
         if (++m_requestsServed >= m_limits.maxRequestsPerConnection)
             m_keepAlive = false;
 
-        // No endpoint accepts a body yet. Draining one would be the alternative,
-        // but refusing and closing cannot desynchronise the stream.
+        m_requestBody.clear();
+        m_bodyExpected = 0;
+
+        // Refused rather than streamed past: the body is buffered whole, so an
+        // announced size this large is a memory-exhaustion attempt. Closing is
+        // deliberate — reading and discarding 64 KB+ to stay in sync would do the
+        // attacker's work for them.
+        if (m_request.contentLength > MaxRequestBodyBytes) {
+            m_keepAlive = false;
+            sendError(413);
+            return;
+        }
+
         if (m_request.contentLength > 0) {
-            m_keepAlive = false;
-            sendError(405);
-            return;
+            m_bodyExpected = m_request.contentLength;
+            m_state        = State::ReadingBody;
+            continue;                 // Collected by the branch at the top.
         }
 
-        m_responseStarted = false;
+        dispatchRequest();
+    }
+}
 
+void Connection::dispatchRequest()
+{
+    m_responseStarted = false;
+    m_suppressBody    = (m_request.method == "HEAD");
 
-        m_suppressBody   = (m_request.method == "HEAD");
-        m_router->handle(*this, m_request);
+    m_router->handle(*this, m_request);
 
-        // A Router that returns without responding would otherwise leave the
-        // client waiting for the idle timeout with no explanation.
-        if (!m_responseStarted) {
-            m_keepAlive = false;
-            sendError(500);
-            return;
-        }
+    // A Router that returns without responding would otherwise leave the
+    // client waiting for the idle timeout with no explanation.
+    if (!m_responseStarted) {
+        m_keepAlive = false;
+        sendError(500);
     }
 }
 
