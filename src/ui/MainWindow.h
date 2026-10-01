@@ -35,6 +35,8 @@
                             // to No-IP so nestdrive.ddns.net always resolves
                             // MainWindow creates and owns one instance of this.
 
+namespace db { class Database; }
+
 #include "core/AppConfig/AppConfig.h"      // Reads credentials and settings from config.ini at runtime
                             // this is how we aviod hardcoding passwords in source code.
                             // config.ini lives at project root and is listed in .gitignore.
@@ -51,7 +53,11 @@ public:
      *        and builds the UI layout.
      * @param parent  Qt parent widget (nullptr = top-level window)
      */
-    explicit MainWindow(QWidget* parent = nullptr);
+    /**
+     * @param database Used for the thumbnail index. May be null, in which case
+     *                 thumbnails are disabled and the grid links originals.
+     */
+    explicit MainWindow(db::Database* database = nullptr, QWidget* parent = nullptr);
 
 private slots:
     /**
@@ -90,6 +96,7 @@ private:
 
     FileServer*   m_fileServer   = nullptr; // Owns the HTTP server lifecycle
     DdnsUpdater*  m_ddnsUpdater  = nullptr; // Owns the DDNS polling timer and API calls
+    db::Database* m_database = nullptr;  // Not owned; outlives this window
     AppConfig     m_config;                // Loads settings from config.ini at startup
 
     // ── Private Helper Method ──────────────────────────────────────────────────

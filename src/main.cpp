@@ -39,7 +39,7 @@ int main(int argc, char* argv[])
                 << "| schema version" << database.schemaVersion();
     }
 
-    MainWindow window;
+    MainWindow window(&database);
     window.show();
 
     TrayManager tray(&window);

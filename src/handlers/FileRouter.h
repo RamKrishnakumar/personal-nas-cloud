@@ -4,6 +4,8 @@
 
 #include "http/Router.h"
 
+namespace media { class ThumbnailCache; }
+
 namespace handlers {
 
 /**
@@ -27,13 +29,27 @@ public:
     void setNasRoot(const QString& nasRoot);
     QString nasRoot() const { return m_nasRoot; }
 
+    /**
+     * @brief Supplies the thumbnail cache that backs /_thumb/.
+     *
+     * Optional. Without it the grid falls back to linking originals, which is
+     * correct but slow — the behaviour before step 10.
+     */
+    void setThumbnailCache(media::ThumbnailCache* cache) { m_thumbnails = cache; }
+
     void handle(http::Connection& connection, const http::Request& request) override;
 
 private:
+    /** Serves /_thumb/<tier>/<path>, generating on demand. */
+    void handleThumbnail(http::Connection& connection,
+                         const http::Request& request,
+                         const QByteArray& remainder);
+
     QString buildListingHtml(const QString& directoryPath,
                              const QString& urlPath) const;
 
-    QString m_nasRoot;
+    QString                m_nasRoot;
+    media::ThumbnailCache* m_thumbnails = nullptr;
 };
 
 } // namespace handlers

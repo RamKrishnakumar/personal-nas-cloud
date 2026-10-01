@@ -19,6 +19,8 @@
 #include <QDir>                         // Filesystem directory operations (checking if E:/ exists)
 #include <QDebug>                       // qDebug() for logging to Qt Creator's output panel
 
+#include "app/Paths.h"
+
 // ── Constructor ───────────────────────────────────────────────────────────────
 
 /**
@@ -33,8 +35,9 @@
  *
  * @param parent  Qt parent widget — passing nullptr makes this a top-level window
  */
-MainWindow::MainWindow(QWidget* parent)
+MainWindow::MainWindow(db::Database* database, QWidget* parent)
     : QMainWindow(parent)                    // Initialize Qt's base window class
+    , m_database(database)                   // Not owned — created in main(), outlives this window
     , m_fileServer(new FileServer(this))     // Create file server — 'this' = Qt parent (auto memory managed)
     , m_ddnsUpdater(new DdnsUpdater(this))   // Create DDNS updater — 'this' = Qt parent (auto memory managed)
 {
@@ -88,6 +91,11 @@ MainWindow::MainWindow(QWidget* parent)
             qDebug() << "[DDNS] ❌ Failed:" << error;
         });
     }
+
+    // ── Thumbnails ────────────────────────────────────────────────────────────
+    // The grid points at 320 px copies instead of originals, which is what makes a
+    // folder of photos usable over a slow link.
+    m_fileServer->setThumbnailStore(m_database, app::paths::thumbnailDirectory());
 
     // ── Build UI ──────────────────────────────────────────────────────────────
     // Called last — all member objects must be initialized before UI is built

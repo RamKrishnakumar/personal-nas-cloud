@@ -54,9 +54,6 @@ add_library(nestdrive_http STATIC
     src/http/HttpServer.h
     src/http/HttpServer.cpp
 
-    # Request handling.
-    src/handlers/FileRouter.h
-    src/handlers/FileRouter.cpp
 )
 
 # AUTOMOC is needed here now: Connection, Worker and HttpServer are QObjects.
@@ -83,6 +80,26 @@ target_link_libraries(nestdrive_db PUBLIC Qt6::Core Qt6::Sql)
 target_include_directories(nestdrive_db PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
+
+# ── Media library ────────────────────────────────────────────────────────────
+# Image decoding, so Qt6::Gui lives here rather than in the transport layer.
+add_library(nestdrive_media STATIC
+    src/media/ThumbnailCache.h
+    src/media/ThumbnailCache.cpp
+)
+
+set_target_properties(nestdrive_media PROPERTIES AUTOMOC ON)
+target_link_libraries(nestdrive_media PUBLIC nestdrive_db Qt6::Core Qt6::Gui)
+
+# ── Request handlers ─────────────────────────────────────────────────────────
+# Kept separate so the parser and admission tests link only nestdrive_http and do
+# not pull in Qt6::Gui, Qt6::Sql or their plugins.
+add_library(nestdrive_handlers STATIC
+    src/handlers/FileRouter.h
+    src/handlers/FileRouter.cpp
+)
+
+target_link_libraries(nestdrive_handlers PUBLIC nestdrive_http nestdrive_media)
 
 # ── Source files ─────────────────────────────────────────────────────────────
 qt_add_executable(MyNAS
@@ -118,6 +135,8 @@ target_include_directories(MyNAS PRIVATE
 # On Windows, deploy OpenSSL DLLs (libssl-3-x64.dll, libcrypto-3-x64.dll)
 # next to the exe — Qt's windeployqt does this automatically.
 target_link_libraries(MyNAS PRIVATE
+    nestdrive_handlers
+    nestdrive_media
     nestdrive_http
     nestdrive_db
     Qt6::Core

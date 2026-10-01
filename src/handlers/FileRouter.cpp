@@ -4,7 +4,9 @@
 #include "http/MimeType.h"
 #include "http/PathResolver.h"
 #include "http/RequestParser.h"
+#include "media/ThumbnailCache.h"
 
+#include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -53,6 +55,23 @@ bool wantsDownload(QByteArrayView query)
     return false;
 }
 
+/** Builds "/_thumb/<tier>/<path>?v=<tag>" for one entry. */
+QString buildThumbnailUrl(const QFileInfo& entry, const QString& encodedUrl,
+                          media::ThumbTier tier)
+{
+    // The version tag is what makes an immutable cache policy safe: it changes
+    // when the source file does, so an edited photo is a different URL rather than
+    // a stale entry a browser would keep for a year.
+    const QByteArray tag = media::thumbnailVersionTag(
+        entry.absoluteFilePath(),
+        entry.lastModified().toMSecsSinceEpoch(),
+        entry.size(), tier);
+
+    return QStringLiteral("/_thumb/%1%2?v=%3")
+        .arg(QLatin1Char(media::tierCode(tier)))
+        .arg(encodedUrl, QString::fromLatin1(tag));
+}
+
 QString humanSize(qint64 bytes)
 {
     if (bytes < 1024)
@@ -89,6 +108,13 @@ void FileRouter::handle(http::Connection& connection, const http::Request& reque
         return;
     }
 
+    // ── Thumbnails ────────────────────────────────────────────────────────
+    static const QByteArray thumbPrefix = QByteArrayLiteral("/_thumb/");
+    if (request.path.startsWith(thumbPrefix)) {
+        handleThumbnail(connection, request, request.path.mid(thumbPrefix.size()));
+        return;
+    }
+
     const QString urlPath = QUrl::fromPercentEncoding(request.path);
 
     const auto resolved = http::resolveSafe(m_nasRoot, QString::fromUtf8(request.path));
@@ -111,6 +137,70 @@ void FileRouter::handle(http::Connection& connection, const http::Request& reque
     }
 
     connection.sendFile(*resolved, wantsDownload(request.query));
+}
+
+void FileRouter::handleThumbnail(http::Connection& connection,
+                                 const http::Request& request,
+                                 const QByteArray& remainder)
+{
+    if (!m_thumbnails) {
+        connection.sendError(404);
+        return;
+    }
+
+    // "<tier>/<encoded path>"
+    const qsizetype slash = remainder.indexOf('/');
+    if (slash != 1) {
+        connection.sendError(404);
+        return;
+    }
+
+    const auto tier = media::tierFromCode(remainder.at(0));
+    if (!tier) {
+        connection.sendError(404);
+        return;
+    }
+
+    const auto resolved =
+        http::resolveSafe(m_nasRoot, QString::fromUtf8(remainder.mid(slash)));
+    if (!resolved) {
+        connection.sendError(403);
+        return;
+    }
+
+    if (!QFileInfo::exists(*resolved)) {
+        connection.sendError(404);
+        return;
+    }
+
+    // Immutable: the URL carries the source file's modification time and size, so
+    // a changed file is a different URL and a browser may keep this one forever.
+    // This is what makes a second visit to a folder cost almost nothing.
+    static const QByteArrayView immutable = "public, max-age=31536000, immutable";
+
+    if (const auto cached = m_thumbnails->hit(*resolved, *tier)) {
+        connection.sendFile(*cached, false, immutable);
+        return;
+    }
+
+    // Miss. The worker returns immediately and the response is sent from the
+    // handler below, on this same thread. Blocking here would serialise an entire
+    // folder of misses behind the decode queue.
+    //
+    // &connection as the context object means Qt drops the callback if the
+    // connection dies first, which it often will.
+    connection.deferResponse();
+
+    m_thumbnails->requestAsync(*resolved, *tier, &connection,
+        [&connection](bool ok, const QString& filePath) {
+            if (ok) {
+                connection.sendFile(filePath, false, immutable);
+            } else {
+                // Decode failed — an unsupported variant, or a corrupt file. The
+                // grid shows a broken image rather than stalling on it.
+                connection.sendError(404);
+            }
+        });
 }
 
 QString FileRouter::buildListingHtml(const QString& directoryPath,
@@ -136,11 +226,21 @@ QString FileRouter::buildListingHtml(const QString& directoryPath,
         if (!http::isDisplayableMedia(mime))
             continue;
 
+        const QString url = base + encodeSegment(entry.fileName());
+        const bool    isVideo = mime.startsWith("video/");
+
         QJsonObject item;
         item[QStringLiteral("n")] = entry.fileName();
-        item[QStringLiteral("u")] = base + encodeSegment(entry.fileName());
-        item[QStringLiteral("t")] = mime.startsWith("video/") ? QStringLiteral("v")
-                                                             : QStringLiteral("i");
+        item[QStringLiteral("u")] = url;
+        item[QStringLiteral("t")] = isVideo ? QStringLiteral("v") : QStringLiteral("i");
+
+        // Preview URL for the overlay. Opening a photo previously downloaded the
+        // original — megabytes to look at one phone snapshot. The Download button
+        // still points at "u", so nothing is lost.
+        if (!isVideo && m_thumbnails) {
+            item[QStringLiteral("p")] = buildThumbnailUrl(entry, url, media::ThumbTier::Medium);
+        }
+
         mediaIndex.append(item);
     }
 
@@ -230,12 +330,18 @@ font-weight:600;cursor:pointer;text-decoration:none}
             html += QStringLiteral("<div class='card' data-midx='%1'><div class='thumb'>")
                         .arg(mediaIndexPosition++);
             if (isImage) {
-                // Still the original file: the thumbnail cache lands in step 10,
-                // which is what makes this grid cheap. loading=lazy only defers
-                // the cost.
+                // The grid points at a 320 px thumbnail, not the original. This is
+                // the change that turns a sixty-photo folder from roughly 300 MB of
+                // transfer into a couple of megabytes; loading="lazy" only ever
+                // deferred that cost rather than removing it.
+                const QString source = m_thumbnails
+                    ? escapeHtml(buildThumbnailUrl(entry, base + encodeSegment(name),
+                                                   media::ThumbTier::Small))
+                    : link;
+
                 html += QStringLiteral("<img src='%1' alt='%2' loading='lazy' "
                                        "decoding='async' width='160' height='110'>")
-                            .arg(link, safeName);
+                            .arg(source, safeName);
             } else {
                 html += QStringLiteral("🎬");
             }
@@ -289,7 +395,7 @@ function show(i){
   ovCounter.textContent=(i+1)+'/'+media.length;
   ovImg.style.display='none';
   ovVid.style.display='none';
-  if(m.t==='i'){ovImg.src=m.u;ovImg.style.display='block';}
+  if(m.t==='i'){ovImg.src=m.p||m.u;ovImg.style.display='block';}
   else{ovVid.pause();ovVid.src=m.u;ovVid.style.display='block';}
   ov.classList.add('open');
   document.body.style.overflow='hidden';

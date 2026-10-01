@@ -48,6 +48,15 @@ struct ConnectionLimits
     /** How long to keep retrying for a stream slot before answering 503. */
     int admissionWaitMs = 10'000;
 
+    /**
+     * Longest a Router may defer a response before the client is given up on.
+     *
+     * Covers a thumbnail decode that never finishes. Without it a deferred
+     * response would have no timeout at all, since the idle timer is suspended
+     * while waiting.
+     */
+    int deferralTimeoutMs = 20'000;
+
     /** Interval between admission retries while waiting. */
     int admissionRetryMs = 250;
 };
@@ -113,6 +122,15 @@ public:
     void sendError(int statusCode);
 
     /**
+     * @brief Declares that the response will be sent later, from a callback.
+     *
+     * A Router that returns without responding is otherwise treated as a bug and
+     * answered with 500. Call this before returning from an asynchronous handler;
+     * exactly one send function must still follow.
+     */
+    void deferResponse();
+
+    /**
      * @brief Streams a file, honouring the current request's Range header.
      *
      * Handles 200, 206, 304 and 416 itself, including exact Content-Length, and
@@ -120,13 +138,15 @@ public:
      *
      * @param forceDownload Sends Content-Disposition: attachment when true.
      */
-    void sendFile(const QString& filesystemPath, bool forceDownload);
+    void sendFile(const QString& filesystemPath,
+                  bool forceDownload,
+                  QByteArrayView cacheControl = "private, max-age=3600");
 
 signals:
     void closed();
 
 private:
-    enum class State { ReadingHeaders, AwaitingAdmission, Streaming, Closing };
+    enum class State { ReadingHeaders, AwaitingAdmission, Deferred, Streaming, Closing };
 
     void onReadyRead();
     void onBytesWritten();
@@ -161,6 +181,16 @@ private:
     State      m_state = State::ReadingHeaders;
     Request    m_request;
 
+    /**
+     * Cache-Control for the file response being built.
+     *
+     * Thumbnails are immutable because their URL carries the source file's
+     * modification time: a changed file is a different URL, so a browser may keep
+     * the old one forever. Originals get a short private lifetime instead, since
+     * their URL does not change when they do.
+     */
+    QByteArray m_cacheControl = "private, max-age=3600";
+
     bool m_keepAlive       = true;
     bool m_responseStarted = false;   ///< Guards against a Router sending twice.
     int  m_requestsServed  = 0;
@@ -183,6 +213,7 @@ private:
     QTimer  m_admissionTimer;
     QTimer  m_admissionDeadline;
 
+    QTimer m_deferralTimer;
     QTimer m_idleTimer;
 
     /** Reset on every write; fires when a stream makes no progress. */

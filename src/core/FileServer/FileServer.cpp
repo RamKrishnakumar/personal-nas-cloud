@@ -3,6 +3,7 @@
 #include "handlers/FileRouter.h"
 #include "http/HardwareTier.h"
 #include "http/HttpServer.h"
+#include "media/ThumbnailCache.h"
 
 #include <QCoreApplication>
 #include <QDebug>
@@ -23,10 +24,28 @@ FileServer::FileServer(QObject* parent)
 
 FileServer::~FileServer()
 {
-    // Explicit ordering: the server's worker threads must be joined before the
-    // router they hold a pointer to is destroyed.
+    // Explicit ordering: the worker threads must be joined before the router they
+    // hold a pointer to, and the router before the cache it points at.
     m_server.reset();
     m_router.reset();
+    m_thumbnails.reset();
+}
+
+void FileServer::setThumbnailStore(db::Database* database, const QString& cacheDirectory)
+{
+    // Generator threads come from the same tier detection as everything else, but
+    // the profile is only established in start(). One thread is the conservative
+    // choice and matches the Light tier, which is the target hardware.
+    const http::HardwareProfile detected = http::detectHardwareProfile();
+
+    m_thumbnails = std::make_unique<media::ThumbnailCache>(
+        database, cacheDirectory, detected.thumbnailThreads);
+
+    m_router->setThumbnailCache(m_thumbnails.get());
+
+    qInfo() << "[Thumbs] Cache at" << cacheDirectory
+            << "| format" << m_thumbnails->outputFormat()
+            << "| generators" << detected.thumbnailThreads;
 }
 
 void FileServer::setNasRoot(const QString& path)

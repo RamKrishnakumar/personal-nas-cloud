@@ -6,8 +6,10 @@
 
 #include <memory>
 
+namespace db       { class Database; }
 namespace handlers { class FileRouter; }
 namespace http     { class HttpServer; }
+namespace media    { class ThumbnailCache; }
 
 /**
  * @class FileServer
@@ -78,13 +80,22 @@ public:
     /** Root directory exposed to clients. Set before start(). */
     void setNasRoot(const QString& path);
 
+    /**
+     * @brief Enables thumbnail serving.
+     *
+     * Optional: without it the grid links originals, which works but is slow.
+     * Must be called before start().
+     */
+    void setThumbnailStore(db::Database* database, const QString& cacheDirectory);
+
 signals:
     void serverStarted(QString ip, quint16 port);
     void serverStopped();
 
 private:
-    std::unique_ptr<handlers::FileRouter> m_router;
-    std::unique_ptr<http::HttpServer>     m_server;
+    std::unique_ptr<handlers::FileRouter>  m_router;
+    std::unique_ptr<media::ThumbnailCache> m_thumbnails;
+    std::unique_ptr<http::HttpServer>      m_server;
 
     QSslConfiguration m_sslConfiguration;
     QString           m_tlsErrorString;

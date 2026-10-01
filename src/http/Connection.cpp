@@ -28,6 +28,7 @@ QByteArrayView reasonPhrase(int statusCode)
     case 500: return "Internal Server Error";
     case 501: return "Not Implemented";
     case 503: return "Service Unavailable";
+    case 504: return "Gateway Timeout";
     case 505: return "HTTP Version Not Supported";
     default:  return "Error";
     }
@@ -99,6 +100,14 @@ Connection::Connection(QTcpSocket*             socket,
     m_admissionTimer.setSingleShot(false);
     connect(&m_admissionTimer, &QTimer::timeout, this, &Connection::retryAdmission);
 
+    m_deferralTimer.setSingleShot(true);
+    connect(&m_deferralTimer, &QTimer::timeout, this, [this]() {
+        if (m_state != State::Deferred)
+            return;
+        m_state = State::ReadingHeaders;
+        sendError(504);
+    });
+
     m_admissionDeadline.setSingleShot(true);
     connect(&m_admissionDeadline, &QTimer::timeout, this, [this]() {
         m_admissionTimer.stop();
@@ -130,11 +139,21 @@ QString Connection::peerAddress() const
     return m_socket->peerAddress().toString();
 }
 
+void Connection::deferResponse()
+{
+    m_responseStarted = true;
+    m_state           = State::Deferred;
+
+    m_idleTimer.stop();        // Waiting on our own work is not the client idling.
+    m_deferralTimer.start(m_limits.deferralTimeoutMs);
+}
+
 void Connection::onIdleTimeout()
 {
-    // Nothing is in flight, so this is a client holding a socket open for no
-    // reason. Closing reclaims one of the bounded connection slots.
-    if (m_state != State::Streaming)
+    // Only a client that is connected and asking nothing. A streaming, waiting or
+    // deferred connection is mid-exchange, and closing it here would abort work
+    // that is still progressing.
+    if (m_state == State::ReadingHeaders)
         closeNow();
 }
 
@@ -261,9 +280,12 @@ void Connection::sendError(int statusCode)
     send(statusCode, "text/html; charset=utf-8", body, "Cache-Control: no-store\r\n");
 }
 
-void Connection::sendFile(const QString& filesystemPath, bool forceDownload)
+void Connection::sendFile(const QString& filesystemPath,
+                          bool forceDownload,
+                          QByteArrayView cacheControl)
 {
     m_responseStarted = true;
+    m_cacheControl    = cacheControl.toByteArray();
 
     const QFileInfo info(filesystemPath);
     const QByteArray etag = makeETag(info);
@@ -273,7 +295,7 @@ void Connection::sendFile(const QString& filesystemPath, bool forceDownload)
     // wait for a slot would penalise exactly the clients being most efficient.
     if (m_request.header("if-none-match") == QByteArrayView(etag)) {
         send(304, {}, {}, "ETag: " + etag + "\r\n"
-                          "Cache-Control: private, max-age=3600\r\n");
+                          "Cache-Control: " + m_cacheControl + "\r\n");
         return;
     }
 
@@ -365,7 +387,7 @@ void Connection::beginFileResponse(const QString& filesystemPath, bool forceDown
     QByteArray extra;
     extra += "Accept-Ranges: bytes\r\n";
     extra += "ETag: " + etag + "\r\n";
-    extra += "Cache-Control: private, max-age=3600\r\n";
+    extra += "Cache-Control: " + m_cacheControl + "\r\n";
 
     if (forceDownload) {
         // Only the quote and backslash need escaping inside a quoted-string.
@@ -466,6 +488,7 @@ void Connection::finishResponse()
     m_fileRemaining = 0;
 
     m_stallTimer.stop();
+    m_deferralTimer.stop();
 
     // Released as soon as the transfer ends, not when the connection closes. With
     // keep-alive a client may hold the socket open for another fifteen seconds,
@@ -495,6 +518,7 @@ void Connection::closeNow()
     m_state = State::Closing;
     m_idleTimer.stop();
     m_stallTimer.stop();
+    m_deferralTimer.stop();
     m_admissionTimer.stop();
     m_admissionDeadline.stop();
 
