@@ -144,7 +144,53 @@ void FileRouter::setNasRoot(const QString& nasRoot)
     m_nasRoot = nasRoot;
 }
 
+QString FileRouter::nasRelativePath(const QString& resolvedAbsolutePath) const
+{
+    QString relative = resolvedAbsolutePath;
+
+    // resolveSafe() guarantees the result is inside the root, so this only has to
+    // strip the prefix rather than verify containment again.
+    if (relative.startsWith(m_nasRoot, Qt::CaseInsensitive))
+        relative = relative.mid(m_nasRoot.size());
+
+    return auth::normalisePermissionPath(relative);
+}
+
 void FileRouter::handle(http::Connection& connection, const http::Request& request)
+{
+    // Authentication endpoints stay reachable: this overload is what the transport
+    // test suites use, and handlers::AuthGate routes them before reaching here in
+    // production.
+    if (m_authentication && AuthHandler::handles(request.path)) {
+        m_authentication->handle(connection, request);
+        return;
+    }
+
+    if (!m_allowAnonymous) {
+        // No identity and no explicit permission to proceed without one. Refusing
+        // is the whole point of the default — see setAnonymousAccess().
+        connection.sendError(401);
+        return;
+    }
+
+    // Stands in for a real identity in the transport suites: full rights, so those
+    // tests exercise framing and ranges rather than permission resolution.
+    //
+    // The id must be positive. auth::resolve() treats a non-positive id as nobody,
+    // which is what makes a default-constructed context deny — so a sentinel like
+    // -1 would be refused here by that same guard.
+    auth::AuthContext anonymous;
+    anonymous.authenticated = true;
+    anonymous.user.id       = 1;
+    anonymous.user.role     = auth::Role::Admin;
+    anonymous.user.enabled  = true;
+
+    handle(connection, request, anonymous);
+}
+
+void FileRouter::handle(http::Connection&        connection,
+                        const http::Request&     request,
+                        const auth::AuthContext& context)
 {
     // Checked before the method filter below, because these are the only routes
     // that accept anything other than GET and HEAD.
@@ -165,7 +211,8 @@ void FileRouter::handle(http::Connection& connection, const http::Request& reque
     static const QByteArray staticPrefix = QByteArrayLiteral("/_static/");
 
     if (request.path.startsWith(thumbPrefix)) {
-        handleThumbnail(connection, request, request.path.mid(thumbPrefix.size()));
+        handleThumbnail(connection, request, request.path.mid(thumbPrefix.size()),
+                        context);
         return;
     }
 
@@ -175,13 +222,22 @@ void FileRouter::handle(http::Connection& connection, const http::Request& reque
     }
 
     if (request.path == QByteArrayLiteral("/api/list")) {
-        handleListApi(connection, request);
+        handleListApi(connection, request, context);
         return;
     }
 
     const auto resolved = http::resolveSafe(m_nasRoot, QString::fromUtf8(request.path));
     if (!resolved) {
         connection.sendError(403);
+        return;
+    }
+
+    // Checked against the resolved location, not the requested one.
+    if (!context.permissionFor(nasRelativePath(*resolved)).read) {
+        // 404 rather than 403 for a path the requester may not read. 403 would
+        // confirm that the folder exists, which is exactly what a guest who is
+        // probing for other people's albums is trying to learn.
+        connection.sendError(404);
         return;
     }
 
@@ -206,7 +262,8 @@ void FileRouter::handle(http::Connection& connection, const http::Request& reque
 
 void FileRouter::handleThumbnail(http::Connection& connection,
                                  const http::Request& request,
-                                 const QByteArray& remainder)
+                                 const QByteArray& remainder,
+                                 const auth::AuthContext& context)
 {
     if (!m_thumbnails) {
         connection.sendError(404);
@@ -230,6 +287,14 @@ void FileRouter::handleThumbnail(http::Connection& connection,
         http::resolveSafe(m_nasRoot, QString::fromUtf8(remainder.mid(slash)));
     if (!resolved) {
         connection.sendError(403);
+        return;
+    }
+
+    // A thumbnail is a readable copy of the file, so it needs the same permission
+    // the file does. Without this check a guest could see every photo in the
+    // library at 320 px just by guessing paths.
+    if (!context.permissionFor(nasRelativePath(*resolved)).read) {
+        connection.sendError(404);
         return;
     }
 
@@ -273,7 +338,9 @@ void FileRouter::handleThumbnail(http::Connection& connection,
 //  Listing API
 // ─────────────────────────────────────────────────────────────────────────────
 
-void FileRouter::handleListApi(http::Connection& connection, const http::Request& request)
+void FileRouter::handleListApi(http::Connection& connection,
+                               const http::Request& request,
+                               const auth::AuthContext& context)
 {
     const QueryParameters query = parseQuery(request.query);
 
@@ -285,6 +352,15 @@ void FileRouter::handleListApi(http::Connection& connection, const http::Request
                                                                     "/"));
     if (!resolved) {
         connection.sendError(403);
+        return;
+    }
+
+    // The target comes from a query parameter, which is why the gate cannot check
+    // it and this has to. Resolved first, so the permission applies to the folder
+    // that will actually be read.
+    const QString listedPath = nasRelativePath(*resolved);
+    if (!context.permissionFor(listedPath).read) {
+        connection.sendError(404);
         return;
     }
 
@@ -321,8 +397,29 @@ void FileRouter::handleListApi(http::Connection& connection, const http::Request
     if (descending != naturalOrderIsDescending)
         sortFlags |= QDir::Reversed;
 
-    const QFileInfoList entries =
+    QFileInfoList entries =
         QDir(*resolved).entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot, sortFlags);
+
+    // ── Visibility ────────────────────────────────────────────────────────
+    // Removed before paging rather than after. Filtering a page would leave ragged
+    // pages, a total that disagrees with what is visible, and a scroller whose
+    // arithmetic no longer matches the data.
+    //
+    // Skipped entirely when the requester holds no folder grants: then nothing can
+    // be individually denied, and checking five thousand entries would be work with
+    // a guaranteed answer. A guest with no grants never reaches this point, because
+    // the directory check above already refused them.
+    if (!context.folderPerms.isEmpty()) {
+        QFileInfoList visible;
+        visible.reserve(entries.size());
+
+        for (const QFileInfo& entry : entries) {
+            if (context.permissionFor(nasRelativePath(entry.absoluteFilePath())).read)
+                visible.append(entry);
+        }
+
+        entries = visible;
+    }
 
     // ── Paging ────────────────────────────────────────────────────────────
     // Bounded so one request cannot be asked to serialise an entire enormous
@@ -394,11 +491,22 @@ void FileRouter::handleListApi(http::Connection& connection, const http::Request
     body[QStringLiteral("entries")] = items;
 
     // Resolved server-side. The client uses it only to hide unavailable actions;
-    // every mutating request is re-checked. Fixed until roles arrive in step 14.
+    // every mutating request is re-checked, so tampering with this buys nothing.
+    const auth::Perm folderPermission = context.permissionFor(listedPath);
+
     QJsonObject permissions;
-    permissions[QStringLiteral("read")]   = true;
-    permissions[QStringLiteral("write")]  = false;
-    permissions[QStringLiteral("delete")] = false;
+    permissions[QStringLiteral("read")]  = folderPermission.read;
+    permissions[QStringLiteral("write")] = folderPermission.write;
+
+    // Folder-level, so it is false for a family member even where they may delete
+    // their own uploads: that depends on the individual file's recorded uploader,
+    // which only the per-file check knows. The role is sent so the client can say
+    // "your own files" rather than hiding the action entirely.
+    permissions[QStringLiteral("delete")] = folderPermission.remove;
+    permissions[QStringLiteral("role")]   =
+        context.authenticated ? auth::roleToString(context.user.role) : QString();
+    permissions[QStringLiteral("user")]   = context.user.username;
+
     body[QStringLiteral("perm")] = permissions;
 
     // Built with QJsonDocument rather than string concatenation, so a filename

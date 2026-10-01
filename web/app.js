@@ -24,6 +24,8 @@ const dom = {
   crumbs:   document.getElementById('crumbs'),
   count:    document.getElementById('count'),
   back:     document.getElementById('back'),
+  whoami:   document.getElementById('whoami'),
+  signout:  document.getElementById('signout'),
   status:   document.getElementById('status'),
   overlay:  document.getElementById('overlay'),
   ovTitle:  document.getElementById('ov-title'),
@@ -43,6 +45,10 @@ const state = {
   current: -1,
   columns: 1,
   renderedRange: [-1, -1],
+
+  // Who the server says we are, and what it says we may do here. Advisory only —
+  // it drives what the interface offers, never what the server allows.
+  perm: null,
 };
 
 function readPixels(name) {
@@ -89,6 +95,16 @@ async function loadPage(pageIndex) {
     return;
   }
 
+  // A session that expired while this page was open. The gate answers 401 to a
+  // fetch rather than redirecting it, because redirecting an XHR to an HTML page
+  // surfaces as a JSON parse error instead of a usable signal — so the redirect has
+  // to happen here, carrying where we were so signing in comes back to it.
+  if (response.status === 401) {
+    const next = encodeURIComponent(location.pathname + location.search);
+    location.replace(`/login?next=${next}`);
+    return;
+  }
+
   if (!response.ok) {
     state.requestedPages.delete(pageIndex);
     statusMessage(`Could not list this folder (${response.status}).`);
@@ -97,6 +113,7 @@ async function loadPage(pageIndex) {
 
   const data = await response.json();
   state.total = data.total;
+  if (data.perm) state.perm = data.perm;
 
   data.entries.forEach((entry, i) => { state.entries[offset + i] = entry; });
 
@@ -259,6 +276,30 @@ function updateChrome() {
   const parent = parentPath(state.path);
   dom.back.hidden = parent === null;
   if (parent !== null) dom.back.href = parent;
+
+  // Taken from the listing rather than a separate /api/session call: the server
+  // already resolved it for this folder, so asking again would be a second round
+  // trip for an answer we hold.
+  const who = state.perm && state.perm.user;
+  dom.whoami.hidden = !who;
+  dom.signout.hidden = !who;
+  if (who) {
+    dom.whoami.textContent = state.perm.role
+      ? `${who} (${state.perm.role})`
+      : who;
+  }
+}
+
+/** Ends the session server-side, then returns to the login page. */
+async function signOut() {
+  try {
+    await fetch('/api/logout', { method: 'POST' });
+  } catch {
+    // Clearing the cookie is the server's job, so a failed call means the session
+    // may still be live. Going to the login page anyway is the honest outcome:
+    // staying on a folder view that no longer loads would be worse.
+  }
+  location.replace('/login');
 }
 
 function navigate(path, replace = false) {
@@ -389,6 +430,11 @@ dom.back.addEventListener('click', (event) => {
   event.preventDefault();
   const parent = parentPath(state.path);
   if (parent !== null) navigate(parent);
+});
+
+dom.signout.addEventListener('click', (event) => {
+  event.preventDefault();
+  signOut();
 });
 
 document.getElementById('ov-close').addEventListener('click', closeOverlay);

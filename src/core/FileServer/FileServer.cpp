@@ -1,8 +1,10 @@
 #include "core/FileServer/FileServer.h"
 
 #include "auth/LoginRateLimiter.h"
+#include "auth/PermissionStore.h"
 #include "auth/SessionStore.h"
 #include "auth/UserStore.h"
+#include "handlers/AuthGate.h"
 #include "handlers/AuthHandler.h"
 #include "handlers/FileRouter.h"
 #include "http/HardwareTier.h"
@@ -33,13 +35,15 @@ FileServer::~FileServer()
     // Explicit ordering: the worker threads must be joined before the router they
     // hold a pointer to, and the router before the things it points at.
     m_server.reset();
+    m_sessionSweeper.reset();
+    m_gate.reset();             // Points at the router and the stores below it.
     m_router.reset();
     m_scanner.reset();      // Joins its thread before the cache it uses goes away.
     m_thumbnails.reset();
 
-    m_sessionSweeper.reset();
     m_authentication.reset();   // Joins its hashing thread.
     m_limiter.reset();
+    m_folderPerms.reset();
     m_sessions.reset();
     m_users.reset();
 }
@@ -74,14 +78,28 @@ void FileServer::setAccountStore(db::Database* database)
     if (!database)
         return;
 
-    m_users    = std::make_unique<auth::UserStore>(database);
-    m_sessions = std::make_unique<auth::SessionStore>(database);
-    m_limiter  = std::make_unique<auth::LoginRateLimiter>();
+    m_users       = std::make_unique<auth::UserStore>(database);
+    m_sessions    = std::make_unique<auth::SessionStore>(database);
+    m_folderPerms = std::make_unique<auth::PermissionStore>(database);
+    m_limiter     = std::make_unique<auth::LoginRateLimiter>();
 
     m_authentication = std::make_unique<handlers::AuthHandler>(
         m_users.get(), m_sessions.get(), m_limiter.get());
 
-    m_router->setAuthHandler(m_authentication.get());
+    // The gate becomes the server's router, with the file router behind it. Nothing
+    // reaches the library without passing through here.
+    m_gate = std::make_unique<handlers::AuthGate>(
+        m_router.get(), m_authentication.get(),
+        m_sessions.get(), m_users.get(), m_folderPerms.get());
+
+    if (!m_server->setRouter(m_gate.get())) {
+        // Only possible if this was called after start(), which the header forbids.
+        // Said loudly because the consequence is a server with no gate.
+        qCritical() << "[Auth] ❌ Could not install the authentication gate: the "
+                       "server is already listening. Stop it and reconfigure.";
+        m_gate.reset();
+        return;
+    }
 
     // A server left running for weeks would otherwise only ever sweep at startup.
     // Hourly is far more often than needed for a handful of users, and costs one
@@ -97,12 +115,12 @@ void FileServer::setAccountStore(db::Database* database)
 
     qInfo() << "[Auth] Accounts on record:" << m_users->count();
 
-    // Said plainly because it is the difference between "has a login page" and "is
-    // protected". Step 14 adds the gate that makes the session actually required.
+    // With the gate in place and no accounts, nobody can get in at all. That is the
+    // safe direction, but it needs saying or it looks like the server is broken.
     if (m_users->count() == 0) {
-        qWarning() << "[Auth] No accounts exist yet. The login page is served, but "
-                      "no route requires a session — do not expose this beyond a "
-                      "trusted network.";
+        qWarning() << "[Auth] No accounts exist. Every request will be redirected to "
+                      "the login page, and no login can succeed until an account is "
+                      "created from the desktop window.";
     }
 }
 

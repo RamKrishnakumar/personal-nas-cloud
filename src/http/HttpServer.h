@@ -49,6 +49,19 @@ public:
     ~HttpServer() override;
 
     /**
+     * @brief Replaces the router.
+     *
+     * Exists so an authentication gate can be wrapped around the original router
+     * after construction, which is when the owner's configuration is known. Workers
+     * capture the pointer when they are created in start(), so this must be called
+     * before then — calling it on a listening server would leave existing workers
+     * pointing at the old router and is refused.
+     *
+     * @return false when the server is already listening.
+     */
+    bool setRouter(Router* router);
+
+    /**
      * @brief Worker thread count.
      *
      * Defaults to idealThreadCount clamped to [2, 4]. Serving files is IO-bound,

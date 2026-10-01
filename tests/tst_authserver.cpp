@@ -234,6 +234,10 @@ void TestAuthServer::initTestCase()
     m_router = std::make_unique<handlers::FileRouter>(m_root);
     m_router->setAuthHandler(m_auth.get());
 
+    // This suite is about the credential exchange. The gate itself is covered by
+    // tst_authzserver.
+    m_router->setAnonymousAccess(true);
+
     m_server = std::make_unique<http::HttpServer>(m_router.get());
     QVERIFY(m_server->start(0, QHostAddress::LocalHost));
     m_port = m_server->serverPort();

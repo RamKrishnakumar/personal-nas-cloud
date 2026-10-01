@@ -119,6 +119,10 @@ void TestAdmissionServer::initTestCase()
     thumb.close();
 
     m_router = std::make_unique<handlers::FileRouter>(m_root);
+
+    // Admission control, not authorisation. The router denies anonymous requests
+    // unless told otherwise.
+    m_router->setAnonymousAccess(true);
     m_server = std::make_unique<http::HttpServer>(m_router.get());
 
     // Exactly one shared slot, and no admin reserve in play since roles do not

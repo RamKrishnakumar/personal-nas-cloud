@@ -159,6 +159,10 @@ void TestThumbnailServer::initTestCase()
         m_database.get(), m_tmp.path() + QStringLiteral("/thumbs"), 2);
 
     m_router = std::make_unique<handlers::FileRouter>(m_root);
+
+    // Thumbnail serving, not authorisation. The router denies anonymous requests
+    // unless told otherwise.
+    m_router->setAnonymousAccess(true);
     m_router->setThumbnailCache(m_cache.get());
 
     m_server = std::make_unique<http::HttpServer>(m_router.get());

@@ -159,6 +159,10 @@ void TestListApi::initTestCase()
     }
 
     m_router = std::make_unique<handlers::FileRouter>(m_root);
+
+    // Paging, sorting and escaping, not authorisation. Guest isolation is covered
+    // by tst_authzserver, which puts the gate in front of the same router.
+    m_router->setAnonymousAccess(true);
     m_server = std::make_unique<http::HttpServer>(m_router.get());
     QVERIFY(m_server->start(0, QHostAddress::LocalHost));
     m_port = m_server->serverPort();

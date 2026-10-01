@@ -128,6 +128,21 @@ private:
     QByteArray  m_buffer;
 };
 
+/** Answers every request with a fixed marker, so which router ran is observable. */
+class MarkerRouter : public http::Router
+{
+public:
+    explicit MarkerRouter(QByteArray marker) : m_marker(std::move(marker)) {}
+
+    void handle(http::Connection& connection, const http::Request&) override
+    {
+        connection.send(200, "text/plain; charset=utf-8", m_marker);
+    }
+
+private:
+    QByteArray m_marker;
+};
+
 /** Records which thread handled each request, then delegates. */
 class ThreadRecordingRouter : public http::Router
 {
@@ -194,6 +209,9 @@ private slots:
     void fileBodiesAreNeverCompressed();
     void aRealHttpClientDecodesOurGzip();
 
+    void setRouterReplacesTheRouterBeforeListening();
+    void setRouterIsRefusedWhileListening();
+
 private:
     QTcpSocket* connectToServer();
     Response    request(const QByteArray& raw);
@@ -243,6 +261,11 @@ void TestHttpServer::initTestCase()
 #endif
 
     m_fileRouter = std::make_unique<handlers::FileRouter>(m_root);
+
+    // This suite covers framing, keep-alive and ranges, not authorisation. Without
+    // handlers::AuthGate in front of it the router refuses everything by default,
+    // so the opt-in is explicit and greppable.
+    m_fileRouter->setAnonymousAccess(true);
     m_router     = std::make_unique<ThreadRecordingRouter>(m_fileRouter.get());
     m_server     = std::make_unique<http::HttpServer>(m_router.get());
 
@@ -630,6 +653,81 @@ void TestHttpServer::aRealHttpClientDecodesOurGzip()
     // Decompressed content must be identical to what an uncompressed request
     // returns, byte for byte.
     QCOMPARE(received, plain.body);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Router replacement
+// ─────────────────────────────────────────────────────────────────────────────
+//
+//  How the authentication gate gets installed: FileServer builds the gate after
+//  construction, once the owner's configuration is known, and hands it to the
+//  already-constructed server. If that silently failed, the result would be a
+//  server with no gate — which is why both directions are asserted here.
+
+void TestHttpServer::setRouterReplacesTheRouterBeforeListening()
+{
+    MarkerRouter original(QByteArrayLiteral("original"));
+    MarkerRouter replacement(QByteArrayLiteral("replacement"));
+
+    http::HttpServer server(&original);
+    QVERIFY2(server.setRouter(&replacement), "setRouter was refused before listening");
+    QVERIFY(server.start(0, QHostAddress::LocalHost));
+
+    QTcpSocket socket;
+    socket.connectToHost(QHostAddress::LocalHost, server.serverPort());
+    QVERIFY(spinUntil([&socket] {
+        return socket.state() == QAbstractSocket::ConnectedState;
+    }, 5000));
+
+    socket.write("GET / HTTP/1.1\r\nHost: nas\r\nConnection: close\r\n\r\n");
+    socket.flush();
+
+    Response response;
+    ResponseReader reader(&socket);
+    QVERIFY(reader.read(&response));
+
+    QCOMPARE(response.status, 200);
+    QVERIFY2(response.body == QByteArray("replacement"),
+             "Requests still reached the original router, so a gate installed this "
+             "way would be bypassed");
+
+    server.stop();
+
+    // A null replacement must be refused rather than leaving the server with no
+    // router at all.
+    QVERIFY(!server.setRouter(nullptr));
+}
+
+void TestHttpServer::setRouterIsRefusedWhileListening()
+{
+    MarkerRouter original(QByteArrayLiteral("original"));
+    MarkerRouter replacement(QByteArrayLiteral("replacement"));
+
+    http::HttpServer server(&original);
+    QVERIFY(server.start(0, QHostAddress::LocalHost));
+
+    // Workers captured the pointer when they were created, so a late swap would
+    // leave some requests going through the gate and some bypassing it. Refusing
+    // is the only safe answer.
+    QVERIFY2(!server.setRouter(&replacement),
+             "setRouter succeeded on a listening server, which would leave workers "
+             "pointing at different routers");
+
+    QTcpSocket socket;
+    socket.connectToHost(QHostAddress::LocalHost, server.serverPort());
+    QVERIFY(spinUntil([&socket] {
+        return socket.state() == QAbstractSocket::ConnectedState;
+    }, 5000));
+
+    socket.write("GET / HTTP/1.1\r\nHost: nas\r\nConnection: close\r\n\r\n");
+    socket.flush();
+
+    Response response;
+    ResponseReader reader(&socket);
+    QVERIFY(reader.read(&response));
+    QCOMPARE(response.body, QByteArray("original"));
+
+    server.stop();
 }
 
 QTEST_GUILESS_MAIN(TestHttpServer)

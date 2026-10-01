@@ -65,6 +65,18 @@ HttpServer::~HttpServer()
     stop();
 }
 
+bool HttpServer::setRouter(Router* router)
+{
+    // Refused while listening rather than applied partially: workers took the old
+    // pointer when they were created, so swapping it now would leave some requests
+    // going through the gate and some bypassing it.
+    if (isListening() || !router)
+        return false;
+
+    m_router = router;
+    return true;
+}
+
 void HttpServer::setWorkerCount(int count)
 {
     Q_ASSERT(!isListening());

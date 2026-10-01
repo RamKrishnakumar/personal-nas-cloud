@@ -102,6 +102,10 @@ add_library(nestdrive_auth STATIC
     src/auth/SessionStore.cpp
     src/auth/UserStore.h
     src/auth/UserStore.cpp
+    src/auth/Permissions.h
+    src/auth/Permissions.cpp
+    src/auth/PermissionStore.h
+    src/auth/PermissionStore.cpp
 )
 
 target_link_libraries(nestdrive_auth PUBLIC nestdrive_db Qt6::Core Qt6::Network)
@@ -126,6 +130,8 @@ add_library(nestdrive_handlers STATIC
     src/handlers/FileRouter.cpp
     src/handlers/AuthHandler.h
     src/handlers/AuthHandler.cpp
+    src/handlers/AuthGate.h
+    src/handlers/AuthGate.cpp
 )
 
 target_link_libraries(nestdrive_handlers PUBLIC

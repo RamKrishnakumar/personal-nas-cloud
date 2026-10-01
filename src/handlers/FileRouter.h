@@ -2,6 +2,7 @@
 
 #include <QString>
 
+#include "auth/Permissions.h"
 #include "http/Router.h"
 
 namespace media { class ThumbnailCache; }
@@ -50,13 +51,47 @@ public:
      */
     void setAuthHandler(AuthHandler* authentication) { m_authentication = authentication; }
 
+    /**
+     * @brief Allows requests that carry no identity.
+     *
+     * Off by default, so a FileRouter reached without handlers::AuthGate in front
+     * of it serves nothing. That default is the point: a wiring mistake produces a
+     * server that refuses everything, which is noticed immediately, rather than one
+     * that serves everything, which is not noticed at all.
+     *
+     * Turned on by the transport test suites, which exercise framing, ranges and
+     * admission rather than authorisation. It has no production caller.
+     */
+    void setAnonymousAccess(bool allowed) { m_allowAnonymous = allowed; }
+
+    /**
+     * @brief Router entry point. Denies unless setAnonymousAccess() was given.
+     *
+     * In production handlers::AuthGate calls the overload below instead, with a
+     * context it alone can build.
+     */
     void handle(http::Connection& connection, const http::Request& request) override;
 
+    /** Serves @p request as @p context's owner. */
+    void handle(http::Connection&      connection,
+                const http::Request&   request,
+                const auth::AuthContext& context);
+
 private:
+    /**
+     * @brief NAS-relative form of an absolute path already resolved by this router.
+     *
+     * Permissions are checked against this rather than against the requested URL,
+     * so an encoding trick or a symbolic link cannot make the check and the read
+     * disagree about which folder is involved.
+     */
+    QString nasRelativePath(const QString& resolvedAbsolutePath) const;
+
     /** Serves /_thumb/<tier>/<path>, generating on demand. */
     void handleThumbnail(http::Connection& connection,
                          const http::Request& request,
-                         const QByteArray& remainder);
+                         const QByteArray& remainder,
+                         const auth::AuthContext& context);
 
     /**
      * @brief Serves /api/list — one page of a directory, as JSON.
@@ -66,7 +101,8 @@ private:
      * 300 KB of JSON, around 60 KB gzipped, and the client renders only the rows
      * on screen.
      */
-    void handleListApi(http::Connection& connection, const http::Request& request);
+    void handleListApi(http::Connection& connection, const http::Request& request,
+                       const auth::AuthContext& context);
 
     /** Serves the single-page application shell and its assets from Qt resources. */
     void handleStaticAsset(http::Connection& connection, const QByteArray& assetName);
@@ -75,6 +111,7 @@ private:
     QString                m_nasRoot;
     media::ThumbnailCache* m_thumbnails     = nullptr;
     AuthHandler*           m_authentication = nullptr;
+    bool                   m_allowAnonymous = false;
 };
 
 } // namespace handlers

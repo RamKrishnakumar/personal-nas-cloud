@@ -8,11 +8,12 @@
 
 namespace auth {
 class LoginRateLimiter;
+class PermissionStore;
 class SessionStore;
 class UserStore;
 }
 namespace db       { class Database; }
-namespace handlers { class AuthHandler; class FileRouter; }
+namespace handlers { class AuthGate; class AuthHandler; class FileRouter; }
 namespace http     { class HttpServer; }
 namespace media    { class ThumbnailCache; class ThumbnailScanner; }
 
@@ -105,13 +106,14 @@ public:
     bool thumbnailWarmupEnabled() const { return m_warmupEnabled; }
 
     /**
-     * @brief Enables the login, logout and session endpoints.
+     * @brief Enables accounts, and requires one for every route that reads files.
      *
-     * Must be called before start().
+     * Must be called before start(). Installs handlers::AuthGate in front of the
+     * file router, so after this call an anonymous request is redirected to the
+     * login page rather than served.
      *
-     * @warning Step 13 only. Enabling this does not protect anything yet — every
-     *          other route is still served without a session. The gate that makes
-     *          authentication mean something is step 14.
+     * Without this call the server has no gate, and handlers::FileRouter answers
+     * 401 to everything — refusing is the safe failure for a wiring mistake.
      */
     void setAccountStore(db::Database* database);
 
@@ -138,8 +140,10 @@ private:
 
     std::unique_ptr<auth::UserStore>        m_users;
     std::unique_ptr<auth::SessionStore>     m_sessions;
+    std::unique_ptr<auth::PermissionStore>  m_folderPerms;
     std::unique_ptr<auth::LoginRateLimiter> m_limiter;
     std::unique_ptr<handlers::AuthHandler>  m_authentication;
+    std::unique_ptr<handlers::AuthGate>     m_gate;
 
     /// Retires expired sessions while the server runs. Startup is handled by
     /// SessionStore's constructor; this covers a server left up for weeks.
