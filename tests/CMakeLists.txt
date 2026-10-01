@@ -24,3 +24,6 @@ foreach(suite rangeparser pathresolver requestparser)
 endforeach()
 
 nestdrive_add_test(database LIBRARIES nestdrive_db)
+
+# Integration: real sockets against the worker pool.
+nestdrive_add_test(httpserver LIBRARIES nestdrive_http)

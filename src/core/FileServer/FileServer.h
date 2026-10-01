@@ -1,36 +1,28 @@
 #pragma once
 
 #include <QObject>
-#include <QTcpServer>
-#include <QTcpSocket>
-#include <QSslSocket>
 #include <QSslConfiguration>
-#include <QSslCertificate>
-#include <QSslKey>
-#include <QSslError>
 #include <QString>
+
+#include <memory>
+
+namespace handlers { class FileRouter; }
+namespace http     { class HttpServer; }
 
 /**
  * @class FileServer
- * @brief Production-grade HTTPS/HTTP file server using Qt.
+ * @brief Owns the HTTP stack and exposes it to the UI.
  *
- * Step 1  — HTTPS Foundation:
- *   loadTlsFiles()  loads cert + key → builds QSslConfiguration.
- *   setUseHttps()   switches between HTTPS and plain HTTP mode.
+ * Since v0.6 this is a facade. The work lives in:
+ *   - http::HttpServer  — accepting, and the worker thread pool
+ *   - http::Worker      — socket ownership per thread, TLS handshakes
+ *   - http::Connection  — framing, keep-alive, byte ranges, streaming
+ *   - handlers::FileRouter — what a path means
  *
- * Step 1B — TLS Socket Wiring (onNewConnection):
- *   In HTTPS mode every accepted QTcpSocket is promoted to a QSslSocket.
- *   The raw file-descriptor is adopted by the SSL socket, the TLS
- *   server-side handshake is started, and HTTP parsing begins only after
- *   the `encrypted` signal fires — guaranteeing no plain-text data leaks.
+ * Request handling no longer runs on the GUI thread, so a large download cannot
+ * stall the window the way it did in v0.5.
  *
- * Performance improvements (v0.6):
- *   • 256 KB streaming chunks  (was 64 KB)
- *   • HTTP/1.1 byte-range (partial content) support for video seek
- *   • Aggressive browser caching headers (ETag + Cache-Control)
- *   • Gzip Content-Encoding for HTML responses
- *   • Inline CSS/JS minified and split into static helpers
- *   • Lazy-loaded thumbnail images via loading="lazy"
+ * The public signals are unchanged, so MainWindow needed no rework.
  */
 class FileServer : public QObject
 {
@@ -38,67 +30,48 @@ class FileServer : public QObject
 
 public:
     explicit FileServer(QObject* parent = nullptr);
+    ~FileServer() override;
 
-    // ── TLS (Step 1) ─────────────────────────────────────────────────────────
+    // ── TLS ───────────────────────────────────────────────────────────────
 
     /**
-     * @brief Load PEM certificate + RSA private key from disk.
+     * @brief Loads a PEM certificate and RSA private key.
      *
-     * Paths may be absolute or relative to the executable directory.
-     * Must be called BEFORE start() when useHttps is true.
+     * Relative paths resolve against the executable's directory. Must be called
+     * before start() when HTTPS is wanted.
      *
-     * @return true on success; false with reason in tlsErrorString().
+     * @return true on success; otherwise false with the reason in tlsErrorString().
      */
-    bool loadTlsFiles(const QString& certificatePath,
-                      const QString& privateKeyPath);
+    bool loadTlsFiles(const QString& certificatePath, const QString& privateKeyPath);
 
-    /** Enable or disable HTTPS mode (default: false = plain HTTP). */
     void setUseHttps(bool enabled) { m_useHttps = enabled; }
-
-    /** @return true when the server will use TLS for new connections. */
     bool useHttps() const { return m_useHttps; }
 
-    /**
-     * @return Human-readable description of the last TLS loading error,
-     *         or an empty string when everything is fine.
-     */
     QString tlsErrorString() const { return m_tlsErrorString; }
 
-    // ── Lifecycle ─────────────────────────────────────────────────────────────
+    // ── Lifecycle ─────────────────────────────────────────────────────────
     bool    start(quint16 port = 9090);
     void    stop();
     bool    isRunning() const;
-    quint16 port()      const;
-    QString localIP()   const;
+    quint16 port() const { return m_port; }
+    QString localIP() const;
 
-    /** Root directory exposed to browsers — must end without a trailing slash. */
-    void setNasRoot(const QString& path) { nasRoot = path.endsWith('/') || path.endsWith('\\')
-                                               ? path.chopped(1) : path; }
+    /** Live connection count across all worker threads. */
+    int connectionCount() const;
+
+    /** Root directory exposed to clients. Set before start(). */
+    void setNasRoot(const QString& path);
 
 signals:
     void serverStarted(QString ip, quint16 port);
     void serverStopped();
-    void requestReceived(QString path);
-
-private slots:
-    void onNewConnection();   // Step 1B — TLS socket wiring lives here
 
 private:
-    // HTTP request dispatcher
-    void handleRequest(QTcpSocket* socket);
+    std::unique_ptr<handlers::FileRouter> m_router;
+    std::unique_ptr<http::HttpServer>     m_server;
 
-    // HTML page builders
-    QString buildFileListHTML(const QString& dirPath, const QString& urlPath);
-
-    // ── Configuration ─────────────────────────────────────────────────────────
-    QString  nasRoot     = "E:/";
-    bool     m_useHttps  = false;
-
-    // ── TLS state (Step 1) ────────────────────────────────────────────────────
-    QSslConfiguration m_sslConfig;
+    QSslConfiguration m_sslConfiguration;
     QString           m_tlsErrorString;
-
-    // ── Server core ───────────────────────────────────────────────────────────
-    QTcpServer* m_server = nullptr;
-    quint16     m_port   = 9090;
+    bool              m_useHttps = false;
+    quint16           m_port     = 9090;
 };

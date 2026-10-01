@@ -25,9 +25,27 @@ add_library(nestdrive_http STATIC
     src/http/PathResolver.cpp
     src/http/RequestParser.h
     src/http/RequestParser.cpp
+    src/http/MimeType.h
+    src/http/MimeType.cpp
+
+    # Transport: threading, sockets, TLS, framing and streaming.
+    src/http/Router.h
+    src/http/Connection.h
+    src/http/Connection.cpp
+    src/http/Worker.h
+    src/http/Worker.cpp
+    src/http/HttpServer.h
+    src/http/HttpServer.cpp
+
+    # Request handling.
+    src/handlers/FileRouter.h
+    src/handlers/FileRouter.cpp
 )
 
-target_link_libraries(nestdrive_http PUBLIC Qt6::Core)
+# AUTOMOC is needed here now: Connection, Worker and HttpServer are QObjects.
+set_target_properties(nestdrive_http PROPERTIES AUTOMOC ON)
+
+target_link_libraries(nestdrive_http PUBLIC Qt6::Core Qt6::Network)
 
 target_include_directories(nestdrive_http PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
