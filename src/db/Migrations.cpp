@@ -110,6 +110,31 @@ QStringList schemaVersion1()
     };
 }
 
+/**
+ * Schema version 2 — remembering what could not be decoded.
+ *
+ * A file whose extension says "image" is not necessarily one. An iPhone backup
+ * routinely contains QuickTime movies and XML sidecars named `.JPG`; every visit
+ * to such a folder re-read several megabytes off the disk, failed, and logged.
+ * Recording the failure against the same path/mtime/size identity the thumbnail
+ * key uses means one attempt per file version, ever. Editing the file changes the
+ * identity, so a genuine fix is retried without any invalidation step.
+ */
+QStringList schemaVersion2()
+{
+    return {
+        QStringLiteral(R"(
+            CREATE TABLE thumb_fails (
+                key       TEXT    PRIMARY KEY,
+                src_path  TEXT    NOT NULL,
+                failed_at INTEGER NOT NULL,
+                reason    TEXT
+            )
+        )"),
+        QStringLiteral("CREATE INDEX idx_thumb_fails_age ON thumb_fails(failed_at)"),
+    };
+}
+
 /** Runs one statement, reporting the failing SQL rather than just the driver text. */
 bool runStatement(QSqlDatabase& connection, const QString& sql, QString* error)
 {
@@ -175,6 +200,9 @@ bool applyMigrations(QSqlDatabase& connection, QString* error)
         switch (target) {
         case 1:
             statements = schemaVersion1();
+            break;
+        case 2:
+            statements = schemaVersion2();
             break;
         default:
             if (error)

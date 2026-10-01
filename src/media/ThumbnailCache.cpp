@@ -24,6 +24,16 @@ constexpr qint64 MaxSourcePixels = 80LL * 1000 * 1000;
 /** Fraction of the ceiling to shrink to when evicting, so it is not run per file. */
 constexpr double EvictionTargetRatio = 0.8;
 
+/**
+ * Cap on the in-memory "cannot decode" set.
+ *
+ * A library of fifty thousand HEIC photos would otherwise hold fifty thousand
+ * hashes resident, which is real memory on a 2 GB machine. The most recent
+ * failures are the ones worth remembering: they are the folders being browsed. The
+ * table keeps every row regardless, so nothing is lost but the fast path.
+ */
+constexpr int MaxRememberedFailures = 20'000;
+
 QByteArray hashOf(const QString& sourcePath,
                   qint64         modifiedMsecs,
                   qint64         sourceSize,
@@ -79,6 +89,14 @@ QByteArray thumbnailKey(const QString& sourcePath, qint64 modifiedMsecs,
     return hashOf(sourcePath, modifiedMsecs, sourceSize, tierCode(tier));
 }
 
+QByteArray decodeFailureKey(const QString& sourcePath, qint64 modifiedMsecs,
+                            qint64 sourceSize)
+{
+    // '!' rather than a tier code, so a failure key can never collide with a
+    // thumbnail key for the same file.
+    return hashOf(sourcePath, modifiedMsecs, sourceSize, '!');
+}
+
 QByteArray thumbnailVersionTag(const QString& sourcePath, qint64 modifiedMsecs,
                                qint64 sourceSize, ThumbTier tier)
 {
@@ -131,6 +149,7 @@ ThumbnailCache::ThumbnailCache(db::Database* database,
     m_pool->setObjectName(QStringLiteral("nestdrive-thumbs"));
 
     loadTotalBytesFromIndex();
+    loadDecodeFailures();
     evictIfNeeded();
 }
 
@@ -151,6 +170,26 @@ bool ThumbnailCache::isSupportedImage(const QString& path)
     }();
 
     return readable.contains(QFileInfo(path).suffix().toLower().toUtf8());
+}
+
+bool ThumbnailCache::isKnownUndecodable(const QString& sourcePath,
+                                       qint64         modifiedMsecs,
+                                       qint64         sourceSize) const
+{
+    const QByteArray key = decodeFailureKey(sourcePath, modifiedMsecs, sourceSize);
+    QMutexLocker locker(&m_mutex);
+    return m_undecodable.contains(key);
+}
+
+bool ThumbnailCache::isKnownUndecodable(const QString& sourcePath) const
+{
+    const QFileInfo info(sourcePath);
+    if (!info.exists())
+        return false;
+
+    return isKnownUndecodable(sourcePath,
+                              info.lastModified().toMSecsSinceEpoch(),
+                              info.size());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -201,6 +240,14 @@ void ThumbnailCache::requestAsync(const QString& sourcePath,
         return;
     }
 
+    // Refused before any disk work: these are the `.JPG` files that are really
+    // movies, and re-reading six megabytes to fail again is the cost this avoids.
+    if (isKnownUndecodable(sourcePath, info.lastModified().toMSecsSinceEpoch(),
+                           info.size())) {
+        handler(false, QString());
+        return;
+    }
+
     const qint64     modified = info.lastModified().toMSecsSinceEpoch();
     const QByteArray key      = thumbnailKey(sourcePath, modified, info.size(), tier);
     const QString    target   = cacheFilePath(key);
@@ -241,6 +288,11 @@ bool ThumbnailCache::generateBlocking(const QString& sourcePath, ThumbTier tier)
     const QFileInfo info(sourcePath);
     if (!info.exists() || !isSupportedImage(sourcePath))
         return false;
+
+    if (isKnownUndecodable(sourcePath, info.lastModified().toMSecsSinceEpoch(),
+                           info.size())) {
+        return false;
+    }
 
     const QByteArray key = thumbnailKey(sourcePath,
                                         info.lastModified().toMSecsSinceEpoch(),
@@ -339,8 +391,12 @@ void ThumbnailCache::generate(const QByteArray& key,
             QFile::remove(temporaryPath);
         }
     } else {
-        qWarning() << "[Thumbs] Decode failed for" << sourcePath
+        // Logged once per file version, because the failure is now remembered.
+        // Common cause on a phone backup: the extension lies. iOS exports
+        // QuickTime movies and XML sidecars with a .JPG name.
+        qWarning() << "[Thumbs] Cannot decode, will not retry:" << sourcePath
                    << ':' << reader.errorString();
+        recordDecodeFailure(sourcePath, reader.errorString());
     }
 
     if (ok) {
@@ -413,6 +469,57 @@ void ThumbnailCache::touchInIndex(const QByteArray& key)
     query.addBindValue(QString::fromLatin1(key));
     query.addBindValue(now - 3600);
     query.exec();
+}
+
+void ThumbnailCache::recordDecodeFailure(const QString& sourcePath,
+                                         const QString& reason)
+{
+    const QFileInfo info(sourcePath);
+    if (!info.exists())
+        return;        // Deleted mid-decode; nothing worth remembering.
+
+    const QByteArray key = decodeFailureKey(
+        sourcePath, info.lastModified().toMSecsSinceEpoch(), info.size());
+
+    {
+        QMutexLocker locker(&m_mutex);
+        if (m_undecodable.size() < MaxRememberedFailures)
+            m_undecodable.insert(key);
+    }
+
+    if (!m_database || !m_database->isOpen())
+        return;
+
+    auto handle = m_database->lock();
+    QSqlQuery query(handle.connection());
+    query.prepare(QStringLiteral(
+        "INSERT OR REPLACE INTO thumb_fails (key, src_path, failed_at, reason) "
+        "VALUES (?, ?, ?, ?)"));
+    query.addBindValue(QString::fromLatin1(key));
+    query.addBindValue(sourcePath);
+    query.addBindValue(QDateTime::currentSecsSinceEpoch());
+    query.addBindValue(reason);
+    query.exec();
+}
+
+void ThumbnailCache::loadDecodeFailures()
+{
+    if (!m_database || !m_database->isOpen())
+        return;
+
+    auto handle = m_database->lock();
+    QSqlQuery query(handle.connection());
+
+    // Newest first, so a cap keeps the folders in current use covered.
+    query.prepare(QStringLiteral(
+        "SELECT key FROM thumb_fails ORDER BY failed_at DESC LIMIT ?"));
+    query.addBindValue(MaxRememberedFailures);
+    if (!query.exec())
+        return;
+
+    QMutexLocker locker(&m_mutex);
+    while (query.next())
+        m_undecodable.insert(query.value(0).toString().toLatin1());
 }
 
 void ThumbnailCache::loadTotalBytesFromIndex()

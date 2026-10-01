@@ -398,8 +398,18 @@ void ThumbnailScanner::enqueueChildren(const QString& directoryPath)
         return;
 
     for (const QFileInfo& entry : directory.entryInfoList(QDir::Files)) {
-        if (ThumbnailCache::isSupportedImage(entry.fileName()))
-            m_pendingFiles.enqueue(entry.absoluteFilePath());
+        if (!ThumbnailCache::isSupportedImage(entry.fileName()))
+            continue;
+
+        // A directory that changed is swept again, which would otherwise re-queue
+        // every file in it that has already proved undecodable.
+        if (m_cache->isKnownUndecodable(entry.absoluteFilePath(),
+                                        entry.lastModified().toMSecsSinceEpoch(),
+                                        entry.size())) {
+            continue;
+        }
+
+        m_pendingFiles.enqueue(entry.absoluteFilePath());
     }
 
     recordDirectorySwept(directoryPath);

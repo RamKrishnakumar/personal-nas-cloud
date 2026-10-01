@@ -67,6 +67,17 @@ QByteArray thumbnailVersionTag(const QString& sourcePath,
                                ThumbTier      tier);
 
 /**
+ * @brief Key identifying one source file version for the "cannot decode" record.
+ *
+ * Deliberately tier-independent: a file Qt cannot read is unreadable at every
+ * size, so remembering it once covers both tiers. Built from the same path, mtime
+ * and size as thumbnailKey(), so replacing the file retries it automatically.
+ */
+QByteArray decodeFailureKey(const QString& sourcePath,
+                            qint64         modifiedMsecs,
+                            qint64         sourceSize);
+
+/**
  * @class ThumbnailCache
  * @brief Generates and caches downscaled copies of images.
  *
@@ -109,6 +120,23 @@ public:
 
     /** True when this path looks like an image Qt can decode. */
     static bool isSupportedImage(const QString& path);
+
+    /**
+     * @brief True when this exact file version has already failed to decode.
+     *
+     * The extension is only a hint. An iPhone backup contains QuickTime movies and
+     * XML sidecars named `.JPG`, and without this every folder visit re-read
+     * megabytes off the disk to fail again. Consulted by the listing API as well,
+     * so the client is never handed a thumbnail URL that cannot be satisfied.
+     *
+     * Reads an in-memory set; cheap enough for the hot path.
+     */
+    bool isKnownUndecodable(const QString& sourcePath,
+                            qint64         modifiedMsecs,
+                            qint64         sourceSize) const;
+
+    /** Same test, stat'ing the file itself. Returns false when it does not exist. */
+    bool isKnownUndecodable(const QString& sourcePath) const;
 
     /**
      * @brief Returns the cached file for @p sourcePath, if it already exists.
@@ -176,6 +204,9 @@ private:
     void touchInIndex(const QByteArray& key);
     void loadTotalBytesFromIndex();
 
+    void recordDecodeFailure(const QString& sourcePath, const QString& reason);
+    void loadDecodeFailures();
+
     db::Database* m_database = nullptr;
     QString       m_cacheDirectory;
     QByteArray    m_outputFormat;      ///< "webp", or "jpeg" when WebP is absent.
@@ -185,6 +216,14 @@ private:
 
     mutable QMutex m_mutex;
     QSet<QByteArray> m_inFlight;       ///< Keys currently being generated.
+
+    /**
+     * File versions known not to decode, so they are attempted once and never
+     * again. Held in memory because the listing API consults it per entry; the
+     * table behind it is the durable copy.
+     */
+    QSet<QByteArray> m_undecodable;
+
     qint64 m_totalBytes = 0;
     qint64 m_maxBytes   = DefaultMaxBytes;
 };

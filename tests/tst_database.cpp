@@ -113,6 +113,7 @@ void TestDatabase::expectedTablesExist()
                                      QStringLiteral("folder_perms"),
                                      QStringLiteral("scan_state"),
                                      QStringLiteral("sessions"),
+                                     QStringLiteral("thumb_fails"),
                                      QStringLiteral("thumbs"),
                                      QStringLiteral("users") }) {
         QVERIFY2(tables.contains(expected),

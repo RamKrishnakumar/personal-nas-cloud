@@ -362,8 +362,13 @@ void FileRouter::handleListApi(http::Connection& connection, const http::Request
         // Thumbnail URLs are produced here so the client never has to derive a
         // cache key. Only for formats Qt can decode: HEIC is an image by type but
         // unreadable without an extra decoder, and asking would waste a round trip.
+        // The same applies to a file whose extension lies — a `.JPG` that is really
+        // a QuickTime movie — once one attempt has established that.
         if (isImage && m_thumbnails
-            && media::ThumbnailCache::isSupportedImage(entry.fileName())) {
+            && media::ThumbnailCache::isSupportedImage(entry.fileName())
+            && !m_thumbnails->isKnownUndecodable(
+                   entry.absoluteFilePath(),
+                   entry.lastModified().toMSecsSinceEpoch(), entry.size())) {
             item[QStringLiteral("t")] =
                 buildThumbnailUrl(entry, url, media::ThumbTier::Small);
             item[QStringLiteral("p")] =

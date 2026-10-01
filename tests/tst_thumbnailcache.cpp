@@ -79,6 +79,11 @@ private slots:
     void concurrentRequestsForOneKeyAreCoalesced();
     void failureIsReportedForANonImage();
 
+    // ── Remembering what cannot be decoded ───────────────────────────────
+    void remembersAFileWhoseExtensionLies();
+    void retriesOnceTheFileChanges();
+    void remembersFailuresAcrossRestarts();
+
     // ── Eviction ─────────────────────────────────────────────────────────
     void evictionKeepsTheCacheUnderItsCeiling();
 
@@ -343,6 +348,92 @@ void TestThumbnailCache::failureIsReportedForANonImage()
 
     QVERIFY(spinUntil([&] { return done; }));
     QVERIFY2(!ok, "A non-image must report failure rather than hang");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Remembering what cannot be decoded
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+/**
+ * Writes a QuickTime movie header under a .jpg name.
+ *
+ * Not a contrived case: an iPhone backup folder observed in testing held several
+ * six-megabyte `.JPG` files that were really MOVs, plus XML sidecars with the same
+ * extension. Every folder visit re-read them in full only to fail.
+ */
+bool writeLyingJpeg(const QString& path)
+{
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly))
+        return false;
+    // Explicit length: the header contains NUL bytes, which would truncate a
+    // string literal taken at face value.
+    file.write(QByteArray("\x00\x00\x00\x14" "ftypqt  " "\x00\x00\x00\x00", 16));
+    file.write(QByteArray(4096, '\x11'));      // Body, so it is not trivially small.
+    return true;
+}
+
+} // namespace
+
+void TestThumbnailCache::remembersAFileWhoseExtensionLies()
+{
+    const QString source = sourcePath(QStringLiteral("IMG_4972.jpg"));
+    QVERIFY(writeLyingJpeg(source));
+
+    QVERIFY2(ThumbnailCache::isSupportedImage(source),
+             "The extension must look supported, or this tests nothing");
+    QVERIFY(!m_cache->isKnownUndecodable(source));
+
+    bool done = false;
+    bool ok   = true;
+    m_cache->requestAsync(source, ThumbTier::Small, this,
+        [&](bool success, const QString&) { done = true; ok = success; });
+    QVERIFY(spinUntil([&] { return done; }));
+    QVERIFY(!ok);
+
+    // The point of the feature: one attempt per file version, not one per visit.
+    QVERIFY2(m_cache->isKnownUndecodable(source),
+             "The failure was not remembered, so every folder visit would retry it");
+
+    auto handle = m_database->lock();
+    QSqlQuery query(handle.connection());
+    QVERIFY(query.exec(QStringLiteral("SELECT COUNT(*) FROM thumb_fails")));
+    QVERIFY(query.next());
+    QCOMPARE(query.value(0).toInt(), 1);
+}
+
+void TestThumbnailCache::retriesOnceTheFileChanges()
+{
+    const QString source = sourcePath(QStringLiteral("IMG_4973.jpg"));
+    QVERIFY(writeLyingJpeg(source));
+
+    QVERIFY(!m_cache->generateBlocking(source, ThumbTier::Small));
+    QVERIFY(m_cache->isKnownUndecodable(source));
+
+    // Replacing the file changes its mtime and size, so the failure key changes
+    // too. That is what removes any need for an invalidation step.
+    QVERIFY(QFile::remove(source));
+    QVERIFY(writeImage(source, 800, 600));
+
+    QVERIFY2(!m_cache->isKnownUndecodable(source),
+             "A replaced file must not inherit the old version's failure");
+    QVERIFY2(m_cache->generateBlocking(source, ThumbTier::Small),
+             "A file that now decodes was not retried");
+}
+
+void TestThumbnailCache::remembersFailuresAcrossRestarts()
+{
+    const QString source = sourcePath(QStringLiteral("IMG_4975.jpg"));
+    QVERIFY(writeLyingJpeg(source));
+    QVERIFY(!m_cache->generateBlocking(source, ThumbTier::Small));
+
+    // A restart must not undo the lesson, or the first browse after every launch
+    // would pay the full cost again.
+    ThumbnailCache reopened(m_database.get(), m_tmp->path() + QStringLiteral("/thumbs"), 1);
+    QVERIFY2(reopened.isKnownUndecodable(source),
+             "Failures were not loaded from the index on construction");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
