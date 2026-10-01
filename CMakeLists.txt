@@ -88,6 +88,8 @@ target_include_directories(nestdrive_db PUBLIC
 add_library(nestdrive_media STATIC
     src/media/ThumbnailCache.h
     src/media/ThumbnailCache.cpp
+    src/media/ThumbnailScanner.h
+    src/media/ThumbnailScanner.cpp
 )
 
 set_target_properties(nestdrive_media PROPERTIES AUTOMOC ON)

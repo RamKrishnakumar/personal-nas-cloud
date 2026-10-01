@@ -9,7 +9,7 @@
 namespace db       { class Database; }
 namespace handlers { class FileRouter; }
 namespace http     { class HttpServer; }
-namespace media    { class ThumbnailCache; }
+namespace media    { class ThumbnailCache; class ThumbnailScanner; }
 
 /**
  * @class FileServer
@@ -88,13 +88,23 @@ public:
      */
     void setThumbnailStore(db::Database* database, const QString& cacheDirectory);
 
+    /**
+     * @brief Enables background warming of the thumbnail cache.
+     *
+     * Requires setThumbnailStore() first. The scan starts with the server and stops
+     * with it, and yields whenever a transfer is active.
+     */
+    void setThumbnailWarmupEnabled(bool enabled);
+    bool thumbnailWarmupEnabled() const { return m_warmupEnabled; }
+
 signals:
     void serverStarted(QString ip, quint16 port);
     void serverStopped();
 
 private:
     std::unique_ptr<handlers::FileRouter>  m_router;
-    std::unique_ptr<media::ThumbnailCache> m_thumbnails;
+    std::unique_ptr<media::ThumbnailCache>   m_thumbnails;
+    std::unique_ptr<media::ThumbnailScanner> m_scanner;
     std::unique_ptr<http::HttpServer>      m_server;
 
     QSslConfiguration m_sslConfiguration;
@@ -102,4 +112,5 @@ private:
     bool              m_useHttps = false;
     quint16           m_port     = 9090;
     int               m_streamSlotOverride = 0;
+    bool              m_warmupEnabled      = true;
 };

@@ -4,6 +4,7 @@
 #include "http/HardwareTier.h"
 #include "http/HttpServer.h"
 #include "media/ThumbnailCache.h"
+#include "media/ThumbnailScanner.h"
 
 #include <QCoreApplication>
 #include <QDebug>
@@ -28,6 +29,7 @@ FileServer::~FileServer()
     // hold a pointer to, and the router before the cache it points at.
     m_server.reset();
     m_router.reset();
+    m_scanner.reset();      // Joins its thread before the cache it uses goes away.
     m_thumbnails.reset();
 }
 
@@ -43,9 +45,25 @@ void FileServer::setThumbnailStore(db::Database* database, const QString& cacheD
 
     m_router->setThumbnailCache(m_thumbnails.get());
 
+    m_scanner = std::make_unique<media::ThumbnailScanner>(m_thumbnails.get(), database);
+
+    // The scanner asks this before every file. Routing it through the server means
+    // the warm-up yields to any active transfer rather than competing with it.
+    m_scanner->setBusyPredicate([this] {
+        return m_server->activeStreams() > 0;
+    });
+
     qInfo() << "[Thumbs] Cache at" << cacheDirectory
             << "| format" << m_thumbnails->outputFormat()
             << "| generators" << detected.thumbnailThreads;
+}
+
+void FileServer::setThumbnailWarmupEnabled(bool enabled)
+{
+    m_warmupEnabled = enabled;
+
+    if (!enabled && m_scanner)
+        m_scanner->stop();
 }
 
 void FileServer::setNasRoot(const QString& path)
@@ -139,6 +157,13 @@ bool FileServer::start(quint16 port)
     if (!m_server->start(port))
         return false;
 
+    // Started after listening, so the scanner's busy check sees a live server and
+    // yields immediately if someone is already transferring.
+    if (m_warmupEnabled && m_scanner) {
+        m_scanner->setRoot(m_router->nasRoot());
+        m_scanner->start();
+    }
+
     emit serverStarted(localIP(), m_port);
     return true;
 }
@@ -147,6 +172,11 @@ void FileServer::stop()
 {
     if (!m_server->isListening())
         return;
+
+    // Stopped first: there is no point warming a cache nobody can read from, and
+    // the scan would otherwise keep a disk busy after the user stopped the server.
+    if (m_scanner)
+        m_scanner->stop();
 
     m_server->stop();
     emit serverStopped();

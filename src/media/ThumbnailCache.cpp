@@ -233,6 +233,33 @@ void ThumbnailCache::requestAsync(const QString& sourcePath,
     });
 }
 
+bool ThumbnailCache::generateBlocking(const QString& sourcePath, ThumbTier tier)
+{
+    if (hit(sourcePath, tier))
+        return true;
+
+    const QFileInfo info(sourcePath);
+    if (!info.exists() || !isSupportedImage(sourcePath))
+        return false;
+
+    const QByteArray key = thumbnailKey(sourcePath,
+                                        info.lastModified().toMSecsSinceEpoch(),
+                                        info.size(), tier);
+
+    {
+        QMutexLocker locker(&m_mutex);
+        if (m_inFlight.contains(key))
+            return false;        // A client is already waiting on this one.
+        m_inFlight.insert(key);
+    }
+
+    generate(key, sourcePath, tier, cacheFilePath(key));
+
+    // generate() clears the in-flight entry and emits ready(), so a client that
+    // asked for the same key while this ran is served by the same work.
+    return hit(sourcePath, tier).has_value();
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Generation
 // ─────────────────────────────────────────────────────────────────────────────

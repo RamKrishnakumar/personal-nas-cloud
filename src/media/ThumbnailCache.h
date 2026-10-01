@@ -133,6 +133,20 @@ public:
                       QObject*       context,
                       std::function<void(bool ok, const QString& filePath)> handler);
 
+    /**
+     * @brief Generates a thumbnail on the calling thread, blocking until done.
+     *
+     * For the background scanner, which has its own low-priority thread and paces
+     * itself. Routing its work through the request pool instead would let a warm-up
+     * pass queue ahead of a thumbnail someone is actually waiting for.
+     *
+     * Returns false without generating when another request for the same key is
+     * already in flight — that one will produce the file.
+     *
+     * @return true when a thumbnail exists afterwards.
+     */
+    bool generateBlocking(const QString& sourcePath, ThumbTier tier);
+
     void   setMaxBytes(qint64 bytes);
     qint64 maxBytes() const;
     qint64 totalBytes() const;

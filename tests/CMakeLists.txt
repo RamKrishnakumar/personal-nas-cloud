@@ -26,6 +26,7 @@ endforeach()
 
 nestdrive_add_test(database LIBRARIES nestdrive_db)
 nestdrive_add_test(thumbnailcache LIBRARIES nestdrive_media)
+nestdrive_add_test(thumbnailscanner LIBRARIES nestdrive_media)
 
 # Integration: real sockets against the worker pool.
 nestdrive_add_test(httpserver LIBRARIES nestdrive_handlers)
