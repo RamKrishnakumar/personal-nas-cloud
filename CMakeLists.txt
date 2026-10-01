@@ -156,6 +156,8 @@ qt_add_executable(MyNAS
 
     src/ui/MainWindow.h
     src/ui/MainWindow.cpp
+    src/ui/AccountDialog.h
+    src/ui/AccountDialog.cpp
     src/ui/TrayManager.h
     src/ui/TrayManager.cpp
 

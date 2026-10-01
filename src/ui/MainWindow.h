@@ -78,7 +78,18 @@ private slots:
      */
     void onServerStopped();
 
+    /**
+     * @brief Opens the account dialog.
+     *
+     * Also called once at startup when no account exists, which is the only time
+     * the dialog refuses to be dismissed.
+     */
+    void onManageAccounts();
+
 private:
+    /** Prompts for the administrator account when none exists yet. */
+    void promptForFirstAdminIfNeeded();
+
     // ── UI Widget Members ──────────────────────────────────────────────────────
     // Initialized to nullptr so they have a safe default value before
     // setupUI() assigns real objects to them.
@@ -89,6 +100,8 @@ private:
     QFileSystemModel* m_fileModel  = nullptr; // Supplies live filesystem data to m_fileTree
     QPushButton*      m_serverBtn  = nullptr; // "▶ Start Server" / "■ Stop Server" toggle button
     QLabel*           m_serverStatus = nullptr; // Shows server URL or "Server stopped" text
+    QPushButton*      m_accountsBtn  = nullptr; // Opens the account dialog
+    QLabel*           m_accountWarning = nullptr; // Shown while no account exists
 
     // ── Core Component Members ─────────────────────────────────────────────────
     // Both are heap-allocated with 'this' as Qt parent, so they are automatically

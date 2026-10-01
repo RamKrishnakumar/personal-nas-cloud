@@ -4,10 +4,20 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sign in — NestDrive</title>
-<link rel="stylesheet" href="/_static/app.css">
 <style>
-/* Scoped here rather than in app.css: the login page is the only thing that
-   needs a centred single-column layout, and app.css is sent with every folder. */
+/* Self-contained on purpose. app.css is written for the virtual scroller — its
+   own comment calls the fixed card dimensions load-bearing — and it puts the
+   body into a 100vh flex column with overflow hidden. The login page needs none
+   of that and must not be at the mercy of changes made for the grid. It also
+   saves a request on the one page served before anyone is signed in. */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: #0a0a14;
+    color: #e6edf6;
+}
+
 .login-wrap {
     min-height: 100vh;
     display: flex;

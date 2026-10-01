@@ -108,17 +108,53 @@ AuthHandler::~AuthHandler()
     m_hasher->waitForDone();
 }
 
+QByteArray AuthHandler::canonicalPath(const QByteArray& path)
+{
+    QByteArray folded = path.toLower();
+
+    // One trailing slash is tolerated; "/" itself is not an auth path.
+    if (folded.size() > 1 && folded.endsWith('/'))
+        folded.chop(1);
+
+    for (const QByteArray& known : { QByteArrayLiteral("/login"),
+                                     QByteArrayLiteral("/api/login"),
+                                     QByteArrayLiteral("/api/logout"),
+                                     QByteArrayLiteral("/api/session") }) {
+        if (folded == known)
+            return known;
+    }
+
+    return {};
+}
+
 bool AuthHandler::handles(const QByteArray& path)
 {
-    return path == QByteArrayLiteral("/login")
-        || path == QByteArrayLiteral("/api/login")
-        || path == QByteArrayLiteral("/api/logout")
-        || path == QByteArrayLiteral("/api/session");
+    return !canonicalPath(path).isEmpty();
 }
 
 void AuthHandler::handle(http::Connection& connection, const http::Request& request)
 {
-    const QByteArray& path = request.path;
+    const QByteArray path = canonicalPath(request.path);
+
+    // Redirected rather than served directly, so there is exactly one URL for each
+    // endpoint and the address bar ends up showing it. 308 rather than 301 because
+    // it preserves the method: a 301 on POST /API/LOGIN would be retried as a GET
+    // by some clients and the credentials would vanish.
+    if (path != request.path) {
+        QByteArray target = path;
+
+        // The query is client-supplied. RequestParser already rejects control
+        // characters anywhere in the head, so this cannot inject a header; the
+        // check is here so that stays true if the parser ever loosens.
+        if (!request.query.isEmpty()
+            && !request.query.contains('\r') && !request.query.contains('\n')) {
+            target += '?' + request.query;
+        }
+
+        connection.send(308, "text/plain; charset=utf-8", "Moved to " + target + "\n",
+                        "Location: " + target + "\r\n");
+        return;
+    }
 
     if (path == QByteArrayLiteral("/login")) {
         if (request.method != "GET" && request.method != "HEAD") {

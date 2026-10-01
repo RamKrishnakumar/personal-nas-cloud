@@ -66,8 +66,23 @@ public:
                 QObject*                parent = nullptr);
     ~AuthHandler() override;
 
-    /** True when @p path is one this handler owns. */
+    /** True when @p path is one this handler owns, in any accepted spelling. */
     static bool handles(const QByteArray& path);
+
+    /**
+     * @brief The canonical spelling of an auth path, or empty if it is not one.
+     *
+     * A trailing slash and any capitalisation are accepted and redirected to the
+     * one true form. Both are easy to produce by accident — a phone keyboard
+     * autocapitalises the first letter, so a hand-typed address arrives as
+     * `/Login` — and answering 404 to someone trying to reach the sign-in page is
+     * indistinguishable from the feature being missing.
+     *
+     * Deliberately limited to this fixed set of endpoints. The rest of the router
+     * stays case-sensitive, because those paths are filenames and folding them
+     * would be a correctness bug rather than a kindness.
+     */
+    static QByteArray canonicalPath(const QByteArray& path);
 
     /**
      * @brief Serves @p request. Only call when handles() returned true.

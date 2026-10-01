@@ -118,6 +118,15 @@ public:
     /** Accounts on record, so the UI can tell whether anyone has been created. */
     int accountCount() const;
 
+    /**
+     * @brief The account store, or null when setAccountStore() was never called.
+     *
+     * Returned directly rather than wrapped in pass-through methods: creating and
+     * listing accounts is the UI's business, and a facade over it would be four
+     * forwarding functions that add nothing.
+     */
+    auth::UserStore* accountStore() const { return m_users.get(); }
+
 signals:
     void serverStarted(QString ip, quint16 port);
     void serverStopped();

@@ -135,7 +135,14 @@ private slots:
     void cleanup();
 
     void servesTheLoginPage();
+    void loginPageIsSelfContained();
     void loginPageRefusesPost();
+
+    void redirectsTrailingSlash();
+    void redirectsCapitalisedPaths();
+    void redirectPreservesTheNextParameter();
+    void redirectPreservesThePostMethod();
+    void doesNotClaimUnrelatedPaths();
 
     void acceptsCorrectCredentials();
     void issuesAnHttpOnlyCookie();
@@ -322,6 +329,103 @@ void TestAuthServer::servesTheLoginPage()
 
     // A cached login page serves no purpose and is worse on a shared device.
     QCOMPARE(response.header("cache-control"), QByteArray("no-store"));
+}
+
+void TestAuthServer::loginPageIsSelfContained()
+{
+    // It must not pull in app.css. That stylesheet is written for the virtual
+    // scroller and puts the body into a fixed-height flex column with overflow
+    // hidden; the sign-in page has no use for any of it and should not be exposed
+    // to changes made for the grid.
+    const Response response = send("GET /login HTTP/1.1\r\nHost: nas\r\n"
+                                   "Connection: close\r\n\r\n");
+    QCOMPARE(response.status, 200);
+
+    // Asserted as "fetches no external stylesheet" rather than "does not mention
+    // app.css": the page explains in a comment why it does not use it, and matching
+    // the word caught that comment instead of a dependency.
+    QVERIFY2(!response.body.contains("<link"),
+             "The login page pulls in an external stylesheet");
+    QVERIFY2(!response.body.contains("/_static/"),
+             "The login page depends on a static asset");
+
+    // And it must still be styled, or dropping the link just made it ugly.
+    QVERIFY(response.body.contains("<style"));
+}
+
+void TestAuthServer::redirectsTrailingSlash()
+{
+    // A 404 here is indistinguishable from the sign-in page not existing.
+    const Response response = send("GET /login/ HTTP/1.1\r\nHost: nas\r\n"
+                                   "Connection: close\r\n\r\n");
+
+    QCOMPARE(response.status, 308);
+    QCOMPARE(response.header("location"), QByteArray("/login"));
+}
+
+void TestAuthServer::redirectsCapitalisedPaths()
+{
+    // The case that cost a real evening: a phone keyboard autocapitalises, so a
+    // hand-typed address arrives as /Login.
+    for (const QByteArray& path : { QByteArrayLiteral("/Login"),
+                                    QByteArrayLiteral("/LOGIN"),
+                                    QByteArrayLiteral("/Login/") }) {
+        const Response response = send("GET " + path + " HTTP/1.1\r\nHost: nas\r\n"
+                                       "Connection: close\r\n\r\n");
+        QVERIFY2(response.status == 308,
+                 qPrintable(QStringLiteral("%1 gave %2")
+                                .arg(QString::fromLatin1(path))
+                                .arg(response.status)));
+        QCOMPARE(response.header("location"), QByteArray("/login"));
+    }
+
+    const Response api = send("GET /API/Session HTTP/1.1\r\nHost: nas\r\n"
+                              "Connection: close\r\n\r\n");
+    QCOMPARE(api.status, 308);
+    QCOMPARE(api.header("location"), QByteArray("/api/session"));
+}
+
+void TestAuthServer::redirectPreservesTheNextParameter()
+{
+    // Losing it would silently drop the user on the root instead of the folder they
+    // asked for, which is the whole point of the parameter.
+    const Response response = send("GET /Login?next=/Album HTTP/1.1\r\nHost: nas\r\n"
+                                   "Connection: close\r\n\r\n");
+
+    QCOMPARE(response.status, 308);
+    QCOMPARE(response.header("location"), QByteArray("/login?next=/Album"));
+}
+
+void TestAuthServer::redirectPreservesThePostMethod()
+{
+    // 308 rather than 301 exists for this: a 301 would be retried as GET by some
+    // clients and the credentials would be dropped on the floor.
+    const QByteArray body = R"({"username":"ram","password":"a-good-password"})";
+    QByteArray raw = "POST /API/Login HTTP/1.1\r\nHost: nas\r\n"
+                     "Content-Length: " + QByteArray::number(body.size()) + "\r\n"
+                     "Connection: close\r\n\r\n" + body;
+
+    const Response response = send(raw);
+    QCOMPARE(response.status, 308);
+    QCOMPARE(response.header("location"), QByteArray("/api/login"));
+}
+
+void TestAuthServer::doesNotClaimUnrelatedPaths()
+{
+    // Folding must not spread. A file genuinely called "login" in the NAS root is
+    // not the sign-in page, and "/" is not an auth path at all.
+    QVERIFY(!handlers::AuthHandler::handles(QByteArrayLiteral("/")));
+    QVERIFY(!handlers::AuthHandler::handles(QByteArrayLiteral("")));
+    QVERIFY(!handlers::AuthHandler::handles(QByteArrayLiteral("/login.txt")));
+    QVERIFY(!handlers::AuthHandler::handles(QByteArrayLiteral("/login/extra")));
+    QVERIFY(!handlers::AuthHandler::handles(QByteArrayLiteral("/api")));
+    QVERIFY(!handlers::AuthHandler::handles(QByteArrayLiteral("/api/list")));
+    QVERIFY(!handlers::AuthHandler::handles(QByteArrayLiteral("/notlogin")));
+
+    // The listing API must keep working, since it shares the /api prefix.
+    const Response listing = send("GET /api/list HTTP/1.1\r\nHost: nas\r\n"
+                                  "Connection: close\r\n\r\n");
+    QCOMPARE(listing.status, 200);
 }
 
 void TestAuthServer::loginPageRefusesPost()

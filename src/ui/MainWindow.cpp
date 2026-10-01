@@ -18,8 +18,11 @@
 #include <QHeaderView>                  // Controls the column header behaviour in QTreeView
 #include <QDir>                         // Filesystem directory operations (checking if E:/ exists)
 #include <QDebug>                       // qDebug() for logging to Qt Creator's output panel
+#include <QMessageBox>                  // Confirmation after an account is created
 
 #include "app/Paths.h"
+#include "auth/UserStore.h"             // Account lookup and creation
+#include "ui/AccountDialog.h"           // Collects a new account's details
 
 // ── Constructor ───────────────────────────────────────────────────────────────
 
@@ -107,6 +110,77 @@ MainWindow::MainWindow(db::Database* database, QWidget* parent)
     // Called last — all member objects must be initialized before UI is built
     // because setupUI() references m_fileServer and other members.
     setupUI();
+
+    // After the UI exists, so the dialog has a parent to be modal against.
+    promptForFirstAdminIfNeeded();
+}
+
+// ── Accounts ──────────────────────────────────────────────────────────────────
+
+void MainWindow::promptForFirstAdminIfNeeded()
+{
+    auth::UserStore* users = m_fileServer->accountStore();
+
+    // Refreshes the warning banner as well, so it disappears the moment an account
+    // exists rather than at the next launch.
+    const auto refreshWarning = [this](int accounts) {
+        const bool exposed = accounts == 0;
+        m_accountWarning->setVisible(exposed);
+        if (exposed) {
+            m_accountWarning->setText(
+                tr("⚠  No account exists, so anyone who can reach this machine's "
+                   "port can browse and download every file. Create an account "
+                   "before exposing NestDrive beyond your own network."));
+        }
+    };
+
+    if (!users) {
+        m_accountsBtn->setEnabled(false);
+        m_accountsBtn->setToolTip(tr("Unavailable: the database did not open."));
+        refreshWarning(0);
+        return;
+    }
+
+    if (users->count() > 0) {
+        refreshWarning(users->count());
+        return;
+    }
+
+    // Shown once, at first launch. Declining is allowed — the server still works
+    // without accounts today — but the banner then stays up.
+    AccountDialog dialog(users, /*firstAdmin=*/true, this);
+    dialog.exec();
+
+    refreshWarning(users->count());
+
+    if (!dialog.createdUsername().isEmpty()) {
+        qInfo() << "[Auth] Administrator account created:" << dialog.createdUsername();
+    }
+}
+
+void MainWindow::onManageAccounts()
+{
+    auth::UserStore* users = m_fileServer->accountStore();
+    if (!users)
+        return;
+
+    const bool firstAdmin = users->count() == 0;
+
+    AccountDialog dialog(users, firstAdmin, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    m_accountWarning->setVisible(users->count() == 0);
+
+    QMessageBox::information(
+        this, tr("Account created"),
+        tr("%1 can now sign in at %2/login.")
+            .arg(dialog.createdUsername(),
+                 m_fileServer->isRunning()
+                     ? QStringLiteral("http://%1:%2")
+                           .arg(m_fileServer->localIP())
+                           .arg(m_fileServer->port())
+                     : tr("the server address once it is running")));
 }
 
 // ── UI Builder ────────────────────────────────────────────────────────────────
@@ -150,13 +224,30 @@ void MainWindow::setupUI()
     m_serverStatus = new QLabel("Server stopped", this);
     m_serverStatus->setStyleSheet("color: #888;"); // Grey = inactive
 
+    // Accounts button — creating the first one is what makes a login possible.
+    m_accountsBtn = new QPushButton("Accounts…", this);
+    m_accountsBtn->setFixedHeight(32);
+    connect(m_accountsBtn, &QPushButton::clicked,
+            this,          &MainWindow::onManageAccounts);
+
     // Add button and label to the horizontal bar
     barLayout->addWidget(m_serverBtn);
     barLayout->addWidget(m_serverStatus);
     barLayout->addStretch(); // Pushes button and label to the left, leaves right side empty
+    barLayout->addWidget(m_accountsBtn);
 
     // Add the horizontal bar to the top of the main vertical layout
     mainLayout->addLayout(barLayout);
+
+    // Standing warning while the server is open to anyone who can reach the port.
+    // Visible in the window rather than only in the log, because the log is not
+    // where someone decides whether to forward a port.
+    m_accountWarning = new QLabel(this);
+    m_accountWarning->setWordWrap(true);
+    m_accountWarning->setStyleSheet(
+        "background: #4a2000; color: #ffd9a0; padding: 6px; border-radius: 4px;");
+    m_accountWarning->setVisible(false);
+    mainLayout->addWidget(m_accountWarning);
 
     // ── File Browser ──────────────────────────────────────────────────────────
     // Shows the contents of the NAS storage drive (E:/) in a tree view.
