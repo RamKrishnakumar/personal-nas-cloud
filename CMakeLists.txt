@@ -40,6 +40,8 @@ add_library(nestdrive_http STATIC
     src/http/RequestParser.cpp
     src/http/MimeType.h
     src/http/MimeType.cpp
+    src/http/Compression.h
+    src/http/Compression.cpp
     src/http/HardwareTier.h
     src/http/HardwareTier.cpp
     src/http/AdmissionControl.h

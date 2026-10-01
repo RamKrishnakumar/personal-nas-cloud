@@ -20,7 +20,7 @@ function(nestdrive_add_test suite)
 endfunction()
 
 # Pure logic: parsing, paths, admission bookkeeping, hardware detection.
-foreach(suite rangeparser pathresolver requestparser admissioncontrol hardwaretier)
+foreach(suite rangeparser pathresolver requestparser admissioncontrol hardwaretier compression)
     nestdrive_add_test(${suite} LIBRARIES nestdrive_http)
 endforeach()
 

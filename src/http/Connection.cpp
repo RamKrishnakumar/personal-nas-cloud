@@ -1,5 +1,6 @@
 #include "http/Connection.h"
 
+#include "http/Compression.h"
 #include "http/MimeType.h"
 #include "http/RangeParser.h"
 #include "http/Router.h"
@@ -248,14 +249,45 @@ void Connection::send(int statusCode,
 {
     m_responseStarted = true;
 
-    // 304 and HEAD both carry headers only; Content-Length still describes what
-    // a GET would have returned.
+    // ── Compression ───────────────────────────────────────────────────────
+    // In-memory responses only. Compressing a streamed file would mean either
+    // buffering the whole thing or giving up an exact Content-Length, and byte
+    // ranges over a compressed stream are meaningless. Listings are the win here
+    // anyway: repetitive markup, often several hundred kilobytes.
+    QByteArray payload = body;
+    QByteArray encodingHeaders;
+
+    const bool negotiable = statusCode != 304 && isCompressibleContentType(contentType);
+
+    if (negotiable
+        && body.size() >= MinimumCompressibleBytes
+        && acceptsGzip(m_request.header("accept-encoding"))) {
+
+        const QByteArray compressed = gzipCompress(payload);
+
+        // Falls back silently when compression fails or does not help. Sending a
+        // larger body under a Content-Encoding header would be the worst outcome
+        // available.
+        if (!compressed.isEmpty() && compressed.size() < payload.size()) {
+            payload         = compressed;
+            encodingHeaders = "Content-Encoding: gzip\r\n";
+        }
+    }
+
+    // Declared whenever the type is negotiable, not only when this particular
+    // response was compressed. Otherwise a shared cache could hand a gzipped body
+    // to a client that never asked for one.
+    if (negotiable)
+        encodingHeaders += "Vary: Accept-Encoding\r\n";
+
+    // 304 and HEAD both carry headers only; Content-Length still describes what a
+    // GET would have returned, which after compression is the compressed size.
     const bool omitBody = (statusCode == 304) || m_suppressBody;
-    const qint64 declaredLength = (statusCode == 304) ? -1 : body.size();
-    m_socket->write(buildHeaders(statusCode, contentType,
-                                 declaredLength, extraHeaders));
-    if (!omitBody && !body.isEmpty())
-        m_socket->write(body);
+    const qint64 declaredLength = (statusCode == 304) ? -1 : payload.size();
+    m_socket->write(buildHeaders(statusCode, contentType, declaredLength,
+                                 encodingHeaders + extraHeaders));
+    if (!omitBody && !payload.isEmpty())
+        m_socket->write(payload);
 
     finishResponse();
 }

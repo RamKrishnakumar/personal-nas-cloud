@@ -4,12 +4,16 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QMutex>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QSet>
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QThread>
 
 #include "handlers/FileRouter.h"
+#include "http/Compression.h"
 #include "http/Connection.h"
 #include "http/HttpServer.h"
 #include "http/RequestParser.h"
@@ -185,6 +189,10 @@ private slots:
     void malformedRequestGetsBadRequest();
     void concurrentClientsAreAllServed();
     void requestsAreHandledOffTheMainThread();
+    void listingIsGzippedWhenTheClientAcceptsIt();
+    void listingIsNotCompressedWithoutAcceptEncoding();
+    void fileBodiesAreNeverCompressed();
+    void aRealHttpClientDecodesOurGzip();
 
 private:
     QTcpSocket* connectToServer();
@@ -521,6 +529,109 @@ void TestHttpServer::requestsAreHandledOffTheMainThread()
     QVERIFY2(!used.isEmpty(), "No requests were recorded; earlier tests must run first");
     QVERIFY2(!used.contains(QThread::currentThread()),
              "A request was handled on the test's own thread");
+}
+
+void TestHttpServer::listingIsGzippedWhenTheClientAcceptsIt()
+{
+    // Fetch the same listing twice, compressed and not, then check the gzip
+    // trailer against the uncompressed bytes. That proves the stream genuinely
+    // describes this response — a wrong CRC or length produces something a client
+    // discards after transferring it, and no status code reveals that.
+    const Response plain = request("GET /Album HTTP/1.1\r\nHost: h\r\n"
+                                   "Connection: close\r\n\r\n");
+    const Response gzipped = request("GET /Album HTTP/1.1\r\nHost: h\r\n"
+                                     "Accept-Encoding: gzip, deflate, br\r\n"
+                                     "Connection: close\r\n\r\n");
+
+    QCOMPARE(plain.status, 200);
+    QCOMPARE(gzipped.status, 200);
+
+    // Small test listings can fall under MinimumCompressibleBytes; only assert the
+    // framing when compression actually applied.
+    if (gzipped.header("content-encoding") != QByteArray("gzip")) {
+        QVERIFY2(plain.body.size() < http::MinimumCompressibleBytes,
+                 "A listing above the threshold was not compressed");
+        return;
+    }
+
+    QCOMPARE(gzipped.header("vary"), QByteArray("Accept-Encoding"));
+    QCOMPARE(quint8(gzipped.body[0]), 0x1Fu);
+    QCOMPARE(quint8(gzipped.body[1]), 0x8Bu);
+
+    const auto trailer32 = [&](qsizetype fromEnd) {
+        const qsizetype at = gzipped.body.size() - fromEnd;
+        return quint32(quint8(gzipped.body[at]))
+             | (quint32(quint8(gzipped.body[at + 1])) << 8)
+             | (quint32(quint8(gzipped.body[at + 2])) << 16)
+             | (quint32(quint8(gzipped.body[at + 3])) << 24);
+    };
+
+    QCOMPARE(trailer32(4), quint32(plain.body.size()));
+    QCOMPARE(trailer32(8), http::gzipCrc32(plain.body));
+
+    QVERIFY2(gzipped.body.size() < plain.body.size(),
+             "The compressed listing was not smaller");
+}
+
+void TestHttpServer::listingIsNotCompressedWithoutAcceptEncoding()
+{
+    const Response r = request("GET /Album HTTP/1.1\r\nHost: h\r\n"
+                               "Connection: close\r\n\r\n");
+
+    QCOMPARE(r.status, 200);
+    QVERIFY2(r.header("content-encoding").isEmpty(),
+             "A client that did not ask for gzip must not receive it");
+
+    // Vary is still declared, so a shared cache cannot serve a gzipped copy of
+    // this response to such a client.
+    QCOMPARE(r.header("vary"), QByteArray("Accept-Encoding"));
+}
+
+void TestHttpServer::fileBodiesAreNeverCompressed()
+{
+    // Streamed files must stay uncompressed: compression would break the exact
+    // Content-Length that keep-alive depends on, and byte ranges over a compressed
+    // stream are meaningless. An mp4 is already compressed anyway.
+    const Response r = request("GET /Album/clip.mp4 HTTP/1.1\r\nHost: h\r\n"
+                               "Accept-Encoding: gzip\r\n"
+                               "Connection: close\r\n\r\n");
+
+    QCOMPARE(r.status, 200);
+    QVERIFY(r.header("content-encoding").isEmpty());
+    QCOMPARE(r.body, m_fileContents);
+}
+
+void TestHttpServer::aRealHttpClientDecodesOurGzip()
+{
+    // The framing checks verify the bytes we intended to write. This verifies a
+    // client can actually inflate them: QNetworkAccessManager advertises gzip by
+    // itself and decompresses transparently, so a malformed stream shows up here
+    // as an error or as a body that does not match. Hand-assembled gzip framing is
+    // exactly the kind of thing that passes a self-consistent test and still fails
+    // against a real decoder.
+    const Response plain = request("GET /Album HTTP/1.1\r\nHost: h\r\n"
+                                   "Connection: close\r\n\r\n");
+    QCOMPARE(plain.status, 200);
+
+    QNetworkAccessManager manager;
+    QNetworkRequest networkRequest(
+        QUrl(QStringLiteral("http://127.0.0.1:%1/Album").arg(m_port)));
+
+    QNetworkReply* reply = manager.get(networkRequest);
+    QVERIFY(spinUntil([reply] { return reply->isFinished(); }, 10'000));
+
+    QCOMPARE(reply->error(), QNetworkReply::NoError);
+
+    const QByteArray received = reply->readAll();
+    const QByteArray encoding =
+        reply->rawHeader(QByteArrayLiteral("Content-Encoding"));
+    reply->deleteLater();
+
+    QCOMPARE(encoding, QByteArray("gzip"));
+
+    // Decompressed content must be identical to what an uncompressed request
+    // returns, byte for byte.
+    QCOMPARE(received, plain.body);
 }
 
 QTEST_GUILESS_MAIN(TestHttpServer)
