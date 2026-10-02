@@ -204,6 +204,35 @@ target_link_libraries(MyNAS PRIVATE
     Qt6::Sql
 )
 
+# ── Measurement harness ──────────────────────────────────────────────────────
+# Step 18's deliverable. Console target, built with the normal build so it cannot
+# drift from the code it measures, and off by default so it costs a packaged build
+# nothing.
+option(NESTDRIVE_BUILD_BENCH "Build the measurement harness" ON)
+
+if(NESTDRIVE_BUILD_BENCH)
+    qt_add_executable(nestdrive_bench tools/bench/main.cpp)
+
+    target_link_libraries(nestdrive_bench PRIVATE
+        nestdrive_handlers
+        nestdrive_media
+        nestdrive_auth
+        nestdrive_http
+        nestdrive_db
+        Qt6::Core
+        Qt6::Gui          # QImage, for generating the synthetic photo set.
+        Qt6::Network
+        Qt6::Sql
+    )
+
+    # Resident set size comes from GetProcessMemoryInfo, which lives here.
+    if(WIN32)
+        target_link_libraries(nestdrive_bench PRIVATE psapi)
+    endif()
+
+    set_target_properties(nestdrive_bench PROPERTIES WIN32_EXECUTABLE FALSE)
+endif()
+
 # ── Tests ─────────────────────────────────────────────────────────────────────
 # On by default for a normal source build, off when MyNAS is consumed as a
 # subproject. Run with: ctest --test-dir <build-dir> --output-on-failure
