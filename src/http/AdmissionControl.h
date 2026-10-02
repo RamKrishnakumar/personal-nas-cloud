@@ -10,9 +10,10 @@ namespace http {
 /**
  * @brief Opaque identity a stream slot is charged to.
  *
- * The peer IP address until sessions exist, then the session id (step 15). Using
- * an opaque type now means that switch is a one-line change rather than a
- * rework: nothing here interprets the value, it only compares them.
+ * A session identity, supplied by the auth gate; the peer address only as a
+ * fallback for a request that reached a transfer without one. Nothing here
+ * interprets the value, it only compares them, which is what made the move off IP
+ * keying in step 15 a change to the callers alone.
  */
 using ClientId = QByteArray;
 
@@ -79,10 +80,15 @@ struct AdmissionResult
  * and conditional requests are never queued or refused — they cost microseconds
  * and no sustained disk bandwidth. Limiting connections instead would break a
  * single browser tab, which opens about six of them for parallel thumbnails;
- * limiting sessions would evict a phone when a laptop logs in. Neither is the
- * resource that makes the machine lag.
+ * capping how many sessions may exist would evict a phone when a laptop logs in.
+ * Neither is the resource that makes the machine lag.
  *
- * ### Slots are charged per client and path
+ * ### Slots are charged per session and path
+ *
+ * The identity is a session, not an account and not an address. An account would
+ * make a phone and a laptop belonging to the same person compete for one
+ * allowance; an address puts a whole household behind one NAT into a single
+ * bucket, so one person's download stalls everyone else's.
  *
  * A slot is keyed on (client, path) and reference counted. That makes the video
  * seek case work: a player closes its connection and immediately reopens with a
@@ -100,14 +106,17 @@ public:
 
     /**
      * @param totalSlots     Concurrent transfers allowed, from the hardware tier.
-     * @param perClientLimit Concurrent transfers one client may hold. Keeps a
+     * @param perClientLimit Concurrent transfers one session may hold. Keeps a
      *                       browser downloading six files at once from occupying
      *                       every slot; the total time is bandwidth-bound anyway,
      *                       and fewer parallel reads suit a spinning disk better.
-     * @param adminReserve   Slots available only to an administrator, so the
-     *                       owner of the machine is never locked out of their own
-     *                       storage by guests. Consumed from step 15, when roles
-     *                       exist.
+     * @param adminReserve   Slots **above** the shared pool, reachable only by an
+     *                       administrator, so the owner of the machine is never
+     *                       locked out of their own storage by guests. Above rather
+     *                       than carved out of the pool because the pool is already
+     *                       sized to what the disk sustains, and holding one back
+     *                       would make the common case — nobody but the owner
+     *                       streaming — slower than the hardware allows.
      */
     AdmissionControl(int totalSlots, int perClientLimit = 2, int adminReserve = 1);
 

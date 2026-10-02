@@ -55,6 +55,14 @@ AuthGate::AuthGate(FileRouter*            inner,
 {
 }
 
+http::ClientId AuthGate::streamIdentityFor(const auth::Session& session)
+{
+    // The prefix is not decoration: the fallback key in Connection is a peer
+    // address, and a self-describing value is worth having the moment one of these
+    // appears in a log line.
+    return QByteArrayLiteral("s:") + session.tokenHash.left(8).toHex();
+}
+
 bool AuthGate::isPublicPath(const QByteArray& path)
 {
     if (AuthHandler::handles(path))
@@ -125,6 +133,12 @@ void AuthGate::handle(http::Connection& connection, const http::Request& request
     context.authenticated = true;
     if (m_permissions)
         context.folderPerms = m_permissions->forUser(user->id);
+
+    // Set before the handler runs, because the handler is what starts the transfer.
+    // The role is read from the user record rather than from anything the client
+    // sent, so the reserved slot cannot be claimed by asking for it.
+    connection.setStreamIdentity(streamIdentityFor(*session),
+                                 user->role == auth::Role::Admin);
 
     m_inner->handle(connection, request, context);
 }

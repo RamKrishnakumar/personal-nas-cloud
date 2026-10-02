@@ -2,12 +2,14 @@
 
 #include <QByteArray>
 
+#include "http/AdmissionControl.h"
 #include "http/Router.h"
 
 namespace auth {
 class PermissionStore;
 class SessionStore;
 class UserStore;
+struct Session;
 }
 
 namespace handlers {
@@ -63,6 +65,19 @@ public:
 
     /** True for a path served without a session. */
     static bool isPublicPath(const QByteArray& path);
+
+    /**
+     * @brief The admission key for @p session.
+     *
+     * Per session rather than per account, so signing in on a laptop does not eat
+     * the allowance of the phone already playing a video. Derived from the stored
+     * token hash and truncated: the untruncated hash is the `sessions` primary key,
+     * and step 16 logs slot waits, so a full hash would end up in a log file that
+     * someone might reasonably paste into a bug report. Sixty-four bits leaves a
+     * collision — which would only mean two sessions sharing one quota, not a
+     * privilege leak — out of reach for any plausible number of live sessions.
+     */
+    static http::ClientId streamIdentityFor(const auth::Session& session);
 
 private:
     void sendAuthenticationRequired(http::Connection&    connection,

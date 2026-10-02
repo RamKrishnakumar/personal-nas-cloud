@@ -64,10 +64,11 @@ bool readHeadersOnly(QTcpSocket* socket, int* status, QByteArray* head,
  * A single slot is configured so capacity is reached deterministically rather
  * than by timing.
  *
- * Note that ClientId is the peer address until sessions arrive in step 15, so
- * every connection from localhost counts as one client here. That is also true of
- * real clients sharing a household NAT, which is one reason the per-client limit
- * exists rather than relying on the global ceiling alone.
+ * There is no auth gate here, so no session identity is established and admission
+ * falls back to the peer address — which makes every connection from localhost one
+ * client. That is deliberate for this suite: it isolates the socket behaviour from
+ * the identity wiring. Keying on sessions, and the administrator's reserve, are
+ * covered by tst_admissionauth instead.
  */
 class TestAdmissionServer : public QObject
 {
@@ -154,6 +155,16 @@ void TestAdmissionServer::cleanupTestCase()
 QTcpSocket* TestAdmissionServer::connect_()
 {
     auto* socket = new QTcpSocket(this);
+
+    // Not a tuning choice. Without a cap, a test that holds a transfer by not
+    // reading the body does not actually hold it: QTcpSocket drains the kernel
+    // buffer into memory whenever the event loop runs, and these tests spin it
+    // constantly, so the file can finish being sent and quietly free its slot. The
+    // cap makes TCP backpressure real and the held state deterministic rather than
+    // a race against the machine's speed. Tests that do drain fully re-read in a
+    // loop, which this does not affect.
+    socket->setReadBufferSize(64 * 1024);
+
     socket->connectToHost(QHostAddress::LocalHost, m_port);
     if (!spinUntil([socket] { return socket->state() == QAbstractSocket::ConnectedState; })) {
         delete socket;

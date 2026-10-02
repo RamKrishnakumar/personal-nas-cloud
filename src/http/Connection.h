@@ -134,6 +134,23 @@ public:
      */
     bool isEncrypted() const;
 
+    /**
+     * @brief Charges metered transfers on this connection to @p client.
+     *
+     * Called by the auth gate once it knows who is asking, before any handler runs.
+     *
+     * Slots were charged to the peer address until step 15, which is wrong in both
+     * directions: a household behind one NAT shared a single bucket, so one person's
+     * download blocked everyone else's; and an administrator could not be told apart
+     * from a guest, leaving the reserved slot unreachable. A session id fixes both,
+     * and gives each device its own allowance rather than each account.
+     *
+     * @param client  Opaque and stable for the life of the session. Stability is
+     *                what makes the seek case work — see AdmissionControl.
+     * @param isAdmin Unlocks the slot reserved above the shared pool.
+     */
+    void setStreamIdentity(const ClientId& client, bool isAdmin);
+
     // ── Response API, called by a Router ──────────────────────────────────
 
     /** Sends a complete in-memory response. */
@@ -196,6 +213,18 @@ private:
     /** Asks for a slot and either begins streaming or starts waiting. */
     void beginFileResponse(const QString& filesystemPath, bool forceDownload);
 
+    /**
+     * @brief Who this transfer is charged to.
+     *
+     * The session identity when one has been established, the peer address
+     * otherwise. With the gate installed nothing anonymous reaches a metered
+     * transfer, so the fallback is unreachable today and exists for what it rules
+     * out: passing an empty key would put every unidentified request into one shared
+     * bucket, and skipping admission would leave them unmetered altogether. An
+     * address is a coarse key, which is the mildest of the three failures.
+     */
+    ClientId streamClient() const;
+
     /** Retries admission while in AwaitingAdmission. */
     void retryAdmission();
 
@@ -220,6 +249,17 @@ private:
 
     QByteArray m_requestBody;
     qint64     m_bodyExpected = 0;    ///< Bytes still needed while in ReadingBody.
+
+    /**
+     * Identity for admission, set per request by the gate.
+     *
+     * Cleared when each request is dispatched, so a keep-alive connection whose
+     * session was revoked does not keep streaming on the strength of who it used to
+     * be. It deliberately survives past the end of dispatch, because an admission
+     * retry and the transfer itself both run after the handler has returned.
+     */
+    ClientId m_streamClient;
+    bool     m_streamIsAdmin = false;
 
     /**
      * Cache-Control for the file response being built.

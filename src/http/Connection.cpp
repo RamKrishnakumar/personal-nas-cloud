@@ -147,6 +147,17 @@ bool Connection::isEncrypted() const
     return secure && secure->isEncrypted();
 }
 
+void Connection::setStreamIdentity(const ClientId& client, bool isAdmin)
+{
+    m_streamClient  = client;
+    m_streamIsAdmin = isAdmin;
+}
+
+ClientId Connection::streamClient() const
+{
+    return m_streamClient.isEmpty() ? peerAddress().toUtf8() : m_streamClient;
+}
+
 void Connection::deferResponse()
 {
     m_responseStarted = true;
@@ -247,6 +258,12 @@ void Connection::dispatchRequest()
 {
     m_responseStarted = false;
     m_suppressBody    = (m_request.method == "HEAD");
+
+    // Forgotten before the router runs, not after: the gate re-establishes it on
+    // every request, so anything left over here could only be a previous request's
+    // identity being reused by one that failed to authenticate.
+    m_streamClient.clear();
+    m_streamIsAdmin = false;
 
     m_router->handle(*this, m_request);
 
@@ -378,7 +395,7 @@ void Connection::sendFile(const QString& filesystemPath,
     }
 
     AdmissionResult admitted = m_admission->request(
-        peerAddress().toUtf8(), filesystemPath, info.size());
+        streamClient(), filesystemPath, info.size(), m_streamIsAdmin);
 
     if (admitted.outcome == Admission::AtCapacity) {
         // Queue rather than refuse outright. A visible wait reads as a working
@@ -404,7 +421,8 @@ void Connection::retryAdmission()
     }
 
     AdmissionResult admitted = m_admission->request(
-        peerAddress().toUtf8(), m_pendingPath, QFileInfo(m_pendingPath).size());
+        streamClient(), m_pendingPath, QFileInfo(m_pendingPath).size(),
+        m_streamIsAdmin);
 
     if (admitted.outcome == Admission::AtCapacity)
         return;                           // Keep waiting until the deadline.
