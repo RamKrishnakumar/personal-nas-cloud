@@ -91,6 +91,7 @@ private slots:
     void offersNothingForAVideoWithoutAnExtractor();
     void offersThumbnailsForVideoAndHeicWithOne();
     void generatesAThumbnailForAVideo();
+    void thumbnailsAFileWhoseExtensionLies();
     void theIntermediateStillIsNotLeftBehind();
     void aFileTheExtractorCannotReadIsRemembered();
     void theCapabilityFingerprintChangesWithAnExtractor();
@@ -527,6 +528,47 @@ void TestThumbnailCache::generatesAThumbnailForAVideo()
     QVERIFY(thumbnail.height() <= media::tierLongEdge(ThumbTier::Small));
 
     QCOMPARE(QFileInfo(*cached).suffix().toUtf8(), m_cache->outputFormat());
+}
+
+void TestThumbnailCache::thumbnailsAFileWhoseExtensionLies()
+{
+    // The other half of remembersAFileWhoseExtensionLies(). That one asserts the
+    // failure is remembered when nothing can read the file; this one asserts that
+    // with ffmpeg present it is not a failure at all.
+    //
+    // Qt dispatches on the extension, so a `.JPG` holding a QuickTime movie goes to
+    // the JPEG reader and fails. Extension-driven dispatch is exactly what hid these
+    // files, so the fallback cannot be gated on the extension either — it has to run
+    // whenever Qt could not read something it claimed it could.
+    qputenv("FAKE_FFMPEG_MODE", "ok");
+    m_frames = std::make_unique<FrameExtractor>(QStringLiteral(FAKE_FFMPEG_PATH));
+    QVERIFY(m_frames->isAvailable());
+    m_cache->setFrameExtractor(m_frames.get());
+
+    const QString source = sourcePath(QStringLiteral("IMG_4976.jpg"));
+    QVERIFY(writeLyingJpeg(source));
+
+    QVERIFY2(ThumbnailCache::isSupportedImage(source),
+             "the extension must look supported, or this tests nothing");
+
+    QVERIFY2(m_cache->generateBlocking(source, ThumbTier::Small),
+             "a mislabelled video got no thumbnail despite ffmpeg being available");
+
+    QVERIFY2(!m_cache->isKnownUndecodable(source),
+             "a file that did decode must not be remembered as undecodable");
+
+    const auto cached = m_cache->hit(source, ThumbTier::Small);
+    QVERIFY(cached.has_value());
+    QVERIFY2(!QImage(*cached).isNull(), qPrintable(*cached));
+
+    // The fallback writes and removes its own intermediate, so it has its own chance
+    // to leak one — see theIntermediateStillIsNotLeftBehind() for the other path.
+    QDirIterator leftovers(m_tmp->path() + QStringLiteral("/thumbs"),
+                           { QStringLiteral("*.still.png") },
+                           QDir::Files, QDirIterator::Subdirectories);
+    QVERIFY2(!leftovers.hasNext(),
+             qPrintable(QStringLiteral("intermediate left behind: %1")
+                            .arg(leftovers.next())));
 }
 
 void TestThumbnailCache::theIntermediateStillIsNotLeftBehind()

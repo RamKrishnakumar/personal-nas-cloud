@@ -13,6 +13,8 @@
 #include "media/FrameExtractor.h"
 #include "media/ThumbnailCache.h"
 #include "media/ThumbnailScanner.h"
+#include "media/VideoStore.h"
+#include "media/VideoTranscoder.h"
 
 #include <QCoreApplication>
 #include <QDebug>
@@ -42,7 +44,12 @@ FileServer::~FileServer()
     m_router.reset();
     m_scanner.reset();      // Joins its thread before the cache it uses goes away.
     m_thumbnails.reset();
-    m_frames.reset();       // Held by the cache above.
+
+    // The store's worker holds the transcoder, so it has to be joined before the
+    // transcoder goes away — and the transcoder holds the path the extractor found.
+    m_videos.reset();
+    m_transcoder.reset();
+    m_frames.reset();
 
     m_authentication.reset();   // Joins its hashing thread.
     m_limiter.reset();
@@ -71,6 +78,37 @@ bool FileServer::setFrameExtractor(const QString& executableOverride)
 QString FileServer::frameExtractorVersion() const
 {
     return m_frames ? m_frames->versionLine() : QString();
+}
+
+bool FileServer::setVideoStore(db::Database* database, const QString& cacheDirectory)
+{
+    if (!database || !m_frames || !m_frames->isAvailable()) {
+        qInfo() << "[Video] Optimised renditions are off: no ffmpeg.";
+        return false;
+    }
+
+    m_transcoder = std::make_unique<media::VideoTranscoder>(m_frames->executable());
+
+    if (!m_transcoder->isAvailable()) {
+        // ffmpeg without ffprobe. Transcoding everything blindly would be worse than
+        // not transcoding at all — there would be no duration for a progress bar and
+        // no way to tell which files already stream fine.
+        qWarning() << "[Video] ffmpeg is present but ffprobe is not beside it; "
+                      "optimised renditions are off.";
+        m_transcoder.reset();
+        return false;
+    }
+
+    m_videos = std::make_unique<media::VideoStore>(
+        database, m_transcoder.get(), cacheDirectory);
+
+    m_router->setVideoStore(m_videos.get());
+
+    qInfo() << "[Video] Renditions at" << cacheDirectory
+            << "| cache" << (m_videos->totalBytes() / (1024 * 1024)) << "MB of"
+            << (m_videos->maxBytes() / (1024 * 1024)) << "MB";
+
+    return true;
 }
 
 void FileServer::setThumbnailStore(db::Database* database, const QString& cacheDirectory)

@@ -253,8 +253,12 @@ void TestDatabase::upgradesAnOlderDatabaseInPlace()
         QVERIFY(query.exec(QStringLiteral(
             "INSERT INTO scan_state (path, done_at) VALUES ('E:/Photos', 100)")));
 
-        // Wind the file back to version 2 by removing what 3 and 4 added, so this
-        // covers a multi-step upgrade rather than only the most recent one.
+        // Wind the file back to version 2 by removing everything 3, 4 and 5 added, so
+        // this covers a multi-step upgrade rather than only the most recent one. Each
+        // new migration has to be undone here too — which is the point: if it is not,
+        // this test fails loudly rather than quietly stopping at the last version.
+        QVERIFY2(query.exec(QStringLiteral("DROP TABLE videos")),
+                 qPrintable(query.lastError().text()));
         QVERIFY2(query.exec(QStringLiteral(
                      "ALTER TABLE scan_state DROP COLUMN caps")),
                  qPrintable(query.lastError().text()));
@@ -288,6 +292,11 @@ void TestDatabase::upgradesAnOlderDatabaseInPlace()
     QCOMPARE(query.value(0).toLongLong(), 100);
     QVERIFY2(query.value(1).toString().isEmpty(),
              "an upgraded sweep record must not claim any capabilities");
+
+    // And the table version 5 adds is back, so the whole chain ran rather than
+    // stopping at the first step that happened to succeed.
+    QVERIFY2(query.exec(QStringLiteral("SELECT key, state FROM videos")),
+             qPrintable(query.lastError().text()));
 }
 
 void TestDatabase::newerSchemaIsRefused()

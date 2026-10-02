@@ -7,6 +7,7 @@
 #include "http/PathResolver.h"
 #include "http/RequestParser.h"
 #include "media/ThumbnailCache.h"
+#include "media/VideoStore.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -200,9 +201,13 @@ void FileRouter::handle(http::Connection&        connection,
         return;
     }
 
-    // No other method has a defined meaning here yet. Upload and delete arrive in
-    // v0.8, behind the permission model.
-    if (request.method != "GET" && request.method != "HEAD") {
+    // POST is accepted on exactly one path, and the exception is named here rather
+    // than inside the handler so the set of methods this router answers stays
+    // readable in one place. Upload and delete arrive in v0.8, behind the permissions.
+    const bool videoApiPost = request.method == "POST"
+                              && request.path == QByteArrayLiteral("/api/video");
+
+    if (request.method != "GET" && request.method != "HEAD" && !videoApiPost) {
         connection.sendError(405);
         return;
     }
@@ -219,6 +224,19 @@ void FileRouter::handle(http::Connection&        connection,
 
     if (request.path.startsWith(staticPrefix)) {
         handleStaticAsset(connection, request.path.mid(staticPrefix.size()));
+        return;
+    }
+
+    static const QByteArray videoPrefix = QByteArrayLiteral("/_video/");
+
+    if (request.path.startsWith(videoPrefix)) {
+        handleVideoFile(connection, request, request.path.mid(videoPrefix.size()),
+                        context);
+        return;
+    }
+
+    if (request.path == QByteArrayLiteral("/api/video")) {
+        handleVideoApi(connection, request, context);
         return;
     }
 
@@ -526,6 +544,26 @@ void FileRouter::handleListApi(http::Connection& connection,
             }
         }
 
+        // Where a video's optimised rendition stands, so opening one that is already
+        // done needs no extra round trip. Only the states that change what the client
+        // does are sent: a queued or running job is the client's business to poll for,
+        // not the listing's to report, and the listing is cached by nothing.
+        if (isVideo && m_videos && m_videos->isAvailable()) {
+            const media::VideoStatus optimised =
+                m_videos->status(entry.absoluteFilePath());
+
+            if (optimised.state == media::VideoState::Ready) {
+                // `url` is already the percent-encoded NAS-relative path and starts
+                // with a slash, so prefixing is all that is needed — and it keeps
+                // this in step with the route by construction.
+                item[QStringLiteral("vo")] = QStringLiteral("/_video") + url;
+                item[QStringLiteral("vs")] = QStringLiteral("ready");
+            } else if (optimised.state != media::VideoState::Unknown) {
+                item[QStringLiteral("vs")] =
+                    media::videoStateToString(optimised.state);
+            }
+        }
+
         items.append(item);
     }
 
@@ -565,6 +603,116 @@ void FileRouter::handleListApi(http::Connection& connection,
 // ─────────────────────────────────────────────────────────────────────────────
 //  Static assets
 // ─────────────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Optimised video
+// ─────────────────────────────────────────────────────────────────────────────
+
+void FileRouter::handleVideoApi(http::Connection& connection,
+                                const http::Request& request,
+                                const auth::AuthContext& context)
+{
+    const QueryParameters query = parseQuery(request.query);
+    const QString requested = query.value(QByteArrayLiteral("path"), QString());
+
+    const auto resolved =
+        http::resolveSafe(m_nasRoot, QUrl::toPercentEncoding(requested, "/"));
+    if (!resolved) {
+        connection.sendError(403);
+        return;
+    }
+
+    // Against the resolved path, by the handler that resolved it — the same rule as
+    // every other route here, and for the same reason.
+    const QString relative = nasRelativePath(*resolved);
+    if (!context.permissionFor(relative).read) {
+        connection.sendError(404);
+        return;
+    }
+
+    QJsonObject body;
+    body[QStringLiteral("path")] = relative;
+
+    if (!m_videos || !m_videos->isAvailable()) {
+        // Explicitly "unavailable" rather than an error. The client's correct
+        // response is to play the original, which is what it did before any of this
+        // existed, and an error would make it look broken instead.
+        body[QStringLiteral("state")]     = QStringLiteral("unavailable");
+        body[QStringLiteral("available")] = false;
+        connection.send(200, "application/json; charset=utf-8",
+                        QJsonDocument(body).toJson(QJsonDocument::Compact),
+                        "Cache-Control: no-store\r\n");
+        return;
+    }
+
+    // POST asks for the work; GET only reports. A GET that started a four-minute
+    // transcode would let a link prefetcher set a whole library encoding.
+    const media::VideoStatus status = request.method == "POST"
+                                          ? m_videos->request(*resolved)
+                                          : m_videos->status(*resolved);
+
+    body[QStringLiteral("available")] = true;
+    body[QStringLiteral("state")]     = media::videoStateToString(status.state);
+
+    if (status.state == media::VideoState::Running)
+        body[QStringLiteral("percent")] = status.percent;
+
+    if (status.state == media::VideoState::Queued)
+        body[QStringLiteral("ahead")] = status.queueAhead;
+
+    if (!status.reason.isEmpty())
+        body[QStringLiteral("reason")] = status.reason;
+
+    if (status.state == media::VideoState::Ready) {
+        body[QStringLiteral("url")] = QStringLiteral("/_video/")
+                                      + QString::fromUtf8(
+                                            QUrl::toPercentEncoding(relative, "/"));
+    }
+
+    connection.send(200, "application/json; charset=utf-8",
+                    QJsonDocument(body).toJson(QJsonDocument::Compact),
+                    "Cache-Control: no-store\r\n");
+}
+
+void FileRouter::handleVideoFile(http::Connection& connection,
+                                 const http::Request& request,
+                                 const QByteArray& remainder,
+                                 const auth::AuthContext& context)
+{
+    Q_UNUSED(request)
+
+    if (!m_videos) {
+        connection.sendError(404);
+        return;
+    }
+
+    // The URL names the *source*, not the rendition, and the store derives the
+    // rendition from it. Naming the cache key instead would mean the client could
+    // ask for a file by hash, which is a path the permission check cannot see.
+    const auto resolved = http::resolveSafe(m_nasRoot, remainder);
+    if (!resolved) {
+        connection.sendError(403);
+        return;
+    }
+
+    if (!context.permissionFor(nasRelativePath(*resolved)).read) {
+        connection.sendError(404);
+        return;
+    }
+
+    const auto rendition = m_videos->readyPath(*resolved);
+    if (!rendition) {
+        connection.sendError(404);
+        return;
+    }
+
+    // Immutable, like a thumbnail and for the same reason: the cache key embeds the
+    // source's modification time and size, so a changed file produces a different
+    // rendition. This is also what lets a browser keep the ~10 MB it downloaded,
+    // which is the whole reason replay becomes instant.
+    connection.sendFile(*rendition, /*forceDownload=*/false,
+                        "private, max-age=31536000, immutable");
+}
 
 void FileRouter::handleStaticAsset(http::Connection& connection,
                                    const QByteArray& assetName)

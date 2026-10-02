@@ -55,17 +55,6 @@ set_target_properties(fake_ffprobe PROPERTIES WIN32_EXECUTABLE FALSE)
 nestdrive_add_test(frameextractor LIBRARIES nestdrive_media)
 nestdrive_add_test(videotranscoder LIBRARIES nestdrive_media)
 
-# These suites run the fixtures, so they have to exist first. Passed as defines rather
-# than discovered at runtime: guessing at a sibling path is exactly the kind of thing
-# that works in one build layout and silently skips the tests in another.
-foreach(suite frameextractor videotranscoder thumbnailcache thumbnailscanner)
-    add_dependencies(tst_${suite} fake_ffmpeg fake_ffprobe)
-    target_compile_definitions(tst_${suite} PRIVATE
-        FAKE_FFMPEG_PATH="$<TARGET_FILE:fake_ffmpeg>"
-        FAKE_FFPROBE_PATH="$<TARGET_FILE:fake_ffprobe>"
-    )
-endforeach()
-
 # Integration: real sockets against the worker pool.
 nestdrive_add_test(httpserver LIBRARIES nestdrive_handlers)
 nestdrive_add_test(admissionserver LIBRARIES nestdrive_handlers)
@@ -75,3 +64,18 @@ nestdrive_add_test(authserver LIBRARIES nestdrive_handlers)
 nestdrive_add_test(authzserver LIBRARIES nestdrive_handlers)
 nestdrive_add_test(admissionauth LIBRARIES nestdrive_handlers)
 nestdrive_add_test(auditserver LIBRARIES nestdrive_handlers)
+nestdrive_add_test(videoserver LIBRARIES nestdrive_handlers)
+
+# These suites run the fixtures, so they have to exist first. Listed here, after every
+# target is created, because add_dependencies() needs both sides to exist already.
+#
+# Passed as defines rather than discovered at runtime: guessing at a sibling path is
+# exactly the kind of thing that works in one build layout and silently skips the
+# tests in another.
+foreach(suite frameextractor videotranscoder videoserver thumbnailcache thumbnailscanner)
+    add_dependencies(tst_${suite} fake_ffmpeg fake_ffprobe)
+    target_compile_definitions(tst_${suite} PRIVATE
+        FAKE_FFMPEG_PATH="$<TARGET_FILE:fake_ffmpeg>"
+        FAKE_FFPROBE_PATH="$<TARGET_FILE:fake_ffprobe>"
+    )
+endforeach()

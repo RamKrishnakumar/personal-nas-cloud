@@ -406,7 +406,34 @@ QImage ThumbnailCache::decodeToImage(const QString& sourcePath,
     }
 
     QImage image = reader.read();
-    if (image.isNull() && error)
+    if (!image.isNull())
+        return image;
+
+    // ── A file whose extension lied ───────────────────────────────────────
+    // An iPhone backup folder observed in testing held six-megabyte `.JPG` files
+    // that were really QuickTime movies. Qt dispatches on the extension, so it
+    // picks the JPEG reader, fails, and the file shows a placeholder for ever —
+    // while the real content sits one ffmpeg pass away. ffmpeg sniffs the container
+    // rather than trusting the name, which is the whole fix.
+    //
+    // Reached at most once per file version: whatever happens next is recorded in
+    // thumb_fails, so a genuinely corrupt JPEG costs one process ever rather than
+    // one per folder visit. The poster frame comes from the start of the clip
+    // instead of three seconds in, because extractStill() keys that off the suffix
+    // too — a thumbnail rather than the best possible thumbnail.
+    if (m_frames && m_frames->isAvailable()) {
+        if (m_frames->extractStill(sourcePath, scratchPath, longEdge, nullptr)) {
+            QImage still(scratchPath);
+            QFile::remove(scratchPath);
+
+            if (!still.isNull())
+                return still;
+        }
+    }
+
+    // The reader's complaint, not ffmpeg's: for the overwhelmingly common case of a
+    // file that really is a broken image, that is the message worth keeping.
+    if (error)
         *error = reader.errorString();
 
     return image;

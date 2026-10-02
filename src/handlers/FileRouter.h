@@ -5,7 +5,7 @@
 #include "auth/Permissions.h"
 #include "http/Router.h"
 
-namespace media { class ThumbnailCache; }
+namespace media { class ThumbnailCache; class VideoStore; }
 namespace db { class AuditLog; }
 
 namespace handlers {
@@ -74,6 +74,14 @@ public:
     void setAuditLog(db::AuditLog* audit) { m_audit = audit; }
 
     /**
+     * @brief Enables optimised video renditions.
+     *
+     * Optional. Without it `/api/video` reports that nothing is available and the
+     * client plays originals, which is the behaviour before this existed.
+     */
+    void setVideoStore(media::VideoStore* videos) { m_videos = videos; }
+
+    /**
      * @brief Router entry point. Denies unless setAnonymousAccess() was given.
      *
      * In production handlers::AuthGate calls the overload below instead, with a
@@ -113,12 +121,28 @@ private:
     void handleListApi(http::Connection& connection, const http::Request& request,
                        const auth::AuthContext& context);
 
+    /**
+     * @brief Serves `/api/video` — where a video's optimised rendition stands.
+     *
+     * GET reports; POST asks for one to be made. Split that way because making one
+     * occupies the machine for minutes, which is not something a GET should ever
+     * start — a browser prefetching links would otherwise set a library transcoding.
+     */
+    void handleVideoApi(http::Connection& connection, const http::Request& request,
+                        const auth::AuthContext& context);
+
+    /** Serves `/_video/<encoded path>` — the rendition itself. */
+    void handleVideoFile(http::Connection& connection, const http::Request& request,
+                         const QByteArray& remainder,
+                         const auth::AuthContext& context);
+
     /** Serves the single-page application shell and its assets from Qt resources. */
     void handleStaticAsset(http::Connection& connection, const QByteArray& assetName);
     void sendApplicationShell(http::Connection& connection);
 
     QString                m_nasRoot;
     media::ThumbnailCache* m_thumbnails     = nullptr;
+    media::VideoStore*     m_videos         = nullptr;
     AuthHandler*           m_authentication = nullptr;
     db::AuditLog*          m_audit          = nullptr;
     bool                   m_allowAnonymous = false;

@@ -29,6 +29,15 @@ QString databaseFile();
 /** Directory holding generated thumbnails. Used from v0.6 step 10 onward. */
 QString thumbnailDirectory();
 
+/**
+ * @brief Directory holding transcoded video renditions.
+ *
+ * Separate from the thumbnails, because the two differ by three orders of magnitude
+ * in size and want their own ceilings — and because deleting one to reclaim space
+ * should not throw away the other, which costs minutes per file to rebuild.
+ */
+QString videoDirectory();
+
 } // namespace paths
 
 /**

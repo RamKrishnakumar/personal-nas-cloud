@@ -6,7 +6,7 @@
 namespace db {
 
 /** Schema version this build expects. Bump when adding a migration step. */
-constexpr int CurrentSchemaVersion = 4;
+constexpr int CurrentSchemaVersion = 5;
 
 /**
  * @brief Brings @p connection's schema up to CurrentSchemaVersion.

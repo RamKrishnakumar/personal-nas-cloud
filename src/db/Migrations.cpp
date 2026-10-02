@@ -174,6 +174,43 @@ QStringList schemaVersion4()
     };
 }
 
+/**
+ * Schema version 5 — the index of transcoded video renditions.
+ *
+ * Separate from `thumbs` rather than squeezed in beside it, because the two are not
+ * the same kind of thing. A thumbnail is kilobytes and takes 50 ms; a rendition is
+ * tens of megabytes and takes four minutes per minute of video on the reference
+ * machine. They need their own size ceiling, their own eviction, and — the part that
+ * matters most — a durable record of the files that need no rendition at all.
+ *
+ * `state` carries that: `skipped` means assess() looked and said the source already
+ * streams fine. Without remembering it, every folder visit would re-probe every
+ * video, and a probe is a subprocess.
+ */
+QStringList schemaVersion5()
+{
+    return {
+        QStringLiteral(R"(
+            CREATE TABLE videos (
+                key          TEXT    PRIMARY KEY,
+                src_path     TEXT    NOT NULL,
+                mtime_ms     INTEGER NOT NULL,
+                size         INTEGER NOT NULL,
+                state        TEXT    NOT NULL
+                             CHECK (state IN ('ready','failed','skipped')),
+                reason       TEXT,
+                bytes        INTEGER NOT NULL DEFAULT 0,
+                duration_ms  INTEGER NOT NULL DEFAULT 0,
+                created_at   INTEGER NOT NULL,
+                last_used_at INTEGER NOT NULL
+            )
+        )"),
+
+        // Eviction walks this, oldest first.
+        QStringLiteral("CREATE INDEX idx_videos_used ON videos(last_used_at)"),
+    };
+}
+
 /** Runs one statement, reporting the failing SQL rather than just the driver text. */
 bool runStatement(QSqlDatabase& connection, const QString& sql, QString* error)
 {
@@ -248,6 +285,9 @@ bool applyMigrations(QSqlDatabase& connection, QString* error)
             break;
         case 4:
             statements = schemaVersion4();
+            break;
+        case 5:
+            statements = schemaVersion5();
             break;
         default:
             if (error)

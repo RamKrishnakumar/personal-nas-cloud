@@ -71,5 +71,14 @@ QString thumbnailDirectory()
     return QDir(directory).absoluteFilePath(QStringLiteral("thumbs"));
 }
 
+QString videoDirectory()
+{
+    const QString directory = cacheDirectory();
+    if (directory.isEmpty())
+        return QString();
+
+    return QDir(directory).absoluteFilePath(QStringLiteral("video"));
+}
+
 } // namespace paths
 } // namespace app

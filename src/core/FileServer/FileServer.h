@@ -15,7 +15,13 @@ class UserStore;
 namespace db       { class AuditLog; class Database; }
 namespace handlers { class AuthGate; class AuthHandler; class FileRouter; }
 namespace http     { class HttpServer; }
-namespace media    { class FrameExtractor; class ThumbnailCache; class ThumbnailScanner; }
+namespace media {
+class FrameExtractor;
+class ThumbnailCache;
+class ThumbnailScanner;
+class VideoStore;
+class VideoTranscoder;
+}
 
 class QTimer;
 
@@ -114,6 +120,26 @@ public:
     QString frameExtractorVersion() const;
 
     /**
+     * @brief Enables optimised video renditions.
+     *
+     * Requires setFrameExtractor() first, since it reuses the ffmpeg it found. Must
+     * be called before start().
+     *
+     * @return true when renditions can be produced. False is ordinary: without
+     *         ffprobe beside ffmpeg there is no way to tell a file that needs one
+     *         from a file that does not, and originals are served instead.
+     */
+    bool setVideoStore(db::Database* database, const QString& cacheDirectory);
+
+    /**
+     * @brief The rendition store, or null when it was never enabled.
+     *
+     * Exposed so the desktop window can start the background pass and show what it
+     * is doing.
+     */
+    media::VideoStore* videoStore() const { return m_videos.get(); }
+
+    /**
      * @brief Enables background warming of the thumbnail cache.
      *
      * Requires setThumbnailStore() first. The scan starts with the server and stops
@@ -162,6 +188,8 @@ signals:
 private:
     std::unique_ptr<handlers::FileRouter>  m_router;
     std::unique_ptr<media::FrameExtractor>   m_frames;
+    std::unique_ptr<media::VideoTranscoder>  m_transcoder;
+    std::unique_ptr<media::VideoStore>       m_videos;
     std::unique_ptr<media::ThumbnailCache>   m_thumbnails;
     std::unique_ptr<media::ThumbnailScanner> m_scanner;
 

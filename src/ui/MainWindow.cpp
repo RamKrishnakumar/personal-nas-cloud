@@ -106,6 +106,12 @@ MainWindow::MainWindow(db::Database* database, QWidget* parent)
     // folder of photos usable over a slow link.
     m_fileServer->setThumbnailStore(m_database, app::paths::thumbnailDirectory());
 
+    // ── Optimised video ───────────────────────────────────────────────────────
+    // Nothing is transcoded until someone tries to play a file: it costs roughly
+    // four minutes of work per minute of 4K video on this class of machine, which is
+    // not something to start uninvited.
+    m_fileServer->setVideoStore(m_database, app::paths::videoDirectory());
+
     // ── Accounts ──────────────────────────────────────────────────────────────
     // Installs the gate, so from here nothing is served without a session. Also
     // builds the audit log, which is why this has to come before the first-run
