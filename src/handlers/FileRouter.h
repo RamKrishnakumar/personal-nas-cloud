@@ -6,6 +6,7 @@
 #include "http/Router.h"
 
 namespace media { class ThumbnailCache; }
+namespace db { class AuditLog; }
 
 namespace handlers {
 
@@ -65,6 +66,14 @@ public:
     void setAnonymousAccess(bool allowed) { m_allowAnonymous = allowed; }
 
     /**
+     * @brief Records downloads, folder opens and refusals.
+     *
+     * Optional. Thumbnails are never recorded however this is set — see db::AuditLog
+     * for why that would drown everything else.
+     */
+    void setAuditLog(db::AuditLog* audit) { m_audit = audit; }
+
+    /**
      * @brief Router entry point. Denies unless setAnonymousAccess() was given.
      *
      * In production handlers::AuthGate calls the overload below instead, with a
@@ -111,6 +120,7 @@ private:
     QString                m_nasRoot;
     media::ThumbnailCache* m_thumbnails     = nullptr;
     AuthHandler*           m_authentication = nullptr;
+    db::AuditLog*          m_audit          = nullptr;
     bool                   m_allowAnonymous = false;
 };
 

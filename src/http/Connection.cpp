@@ -116,6 +116,13 @@ Connection::Connection(QTcpSocket*             socket,
         if (m_state != State::AwaitingAdmission)
             return;
 
+        // Warning, not info: this is the server telling someone no. If these appear
+        // in numbers the slot count is wrong for the machine, and that is a tuning
+        // decision the owner has to be able to see being forced on them.
+        qWarning() << "[HTTP] No transfer slot after"
+                   << m_limits.admissionWaitMs << "ms —" << peerAddress()
+                   << "refused" << m_pendingPath;
+
         // Honest refusal with a retry hint. The client is told to come back
         // rather than left waiting, and step 11's interface turns this into a
         // visible "waiting for a free transfer slot" rather than a dead page.
@@ -398,6 +405,14 @@ void Connection::sendFile(const QString& filesystemPath,
         streamClient(), filesystemPath, info.size(), m_streamIsAdmin);
 
     if (admitted.outcome == Admission::AtCapacity) {
+        // Logged once, here, and not on each retry: the retry timer fires four times
+        // a second, so logging per attempt would turn one waiting client into a wall
+        // of identical lines. The pair of lines that matters is this one and either a
+        // 503 or nothing — nothing meaning the wait was satisfied.
+        qInfo() << "[HTTP] Waiting for a transfer slot:" << peerAddress()
+                << "wants" << filesystemPath << "—" << m_admission->activeStreams()
+                << "of" << m_admission->totalSlots() << "in use";
+
         // Queue rather than refuse outright. A visible wait reads as a working
         // system; an immediate error reads as a broken one.
         m_state                = State::AwaitingAdmission;
@@ -426,6 +441,15 @@ void Connection::retryAdmission()
 
     if (admitted.outcome == Admission::AtCapacity)
         return;                           // Keep waiting until the deadline.
+
+    // Derived from the deadline rather than a stopwatch member, since the deadline
+    // already knows. Without this line a satisfied wait leaves only the "waiting"
+    // entry, which reads exactly like a request that was never answered.
+    const int remaining = m_admissionDeadline.remainingTime();
+    const int waitedMs  = remaining < 0 ? m_limits.admissionWaitMs
+                                        : m_limits.admissionWaitMs - remaining;
+    qInfo() << "[HTTP] Transfer slot granted after" << waitedMs << "ms:"
+            << peerAddress() << m_pendingPath;
 
     m_admissionTimer.stop();
     m_admissionDeadline.stop();

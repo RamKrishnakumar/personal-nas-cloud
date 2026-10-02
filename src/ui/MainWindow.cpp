@@ -22,6 +22,7 @@
 
 #include "app/Paths.h"
 #include "auth/UserStore.h"             // Account lookup and creation
+#include "db/AuditLog.h"                // Records account creation
 #include "ui/AccountDialog.h"           // Collects a new account's details
 
 // ── Constructor ───────────────────────────────────────────────────────────────
@@ -101,9 +102,9 @@ MainWindow::MainWindow(db::Database* database, QWidget* parent)
     m_fileServer->setThumbnailStore(m_database, app::paths::thumbnailDirectory());
 
     // ── Accounts ──────────────────────────────────────────────────────────────
-    // Serves /login and the session endpoints. It does not yet protect anything:
-    // the gate that requires a session on every other route is step 14, and the
-    // first-run wizard that creates the admin account is step 16.
+    // Installs the gate, so from here nothing is served without a session. Also
+    // builds the audit log, which is why this has to come before the first-run
+    // prompt below: creating the administrator is itself an audited event.
     m_fileServer->setAccountStore(m_database);
 
     // ── Build UI ──────────────────────────────────────────────────────────────
@@ -123,14 +124,21 @@ void MainWindow::promptForFirstAdminIfNeeded()
 
     // Refreshes the warning banner as well, so it disappears the moment an account
     // exists rather than at the next launch.
+    //
+    // The wording changed in step 16 because step 14 inverted what zero accounts
+    // means. It used to mean the library was open to anyone who could reach the port;
+    // now the gate refuses every request, so it means nobody can get in at all —
+    // including the owner. Leaving the old text up would have sent people looking for
+    // an exposure that no longer exists while the real problem went unexplained.
     const auto refreshWarning = [this](int accounts) {
-        const bool exposed = accounts == 0;
-        m_accountWarning->setVisible(exposed);
-        if (exposed) {
+        const bool unusable = accounts == 0;
+        m_accountWarning->setVisible(unusable);
+        if (unusable) {
             m_accountWarning->setText(
-                tr("⚠  No account exists, so anyone who can reach this machine's "
-                   "port can browse and download every file. Create an account "
-                   "before exposing NestDrive beyond your own network."));
+                tr("⚠  No account exists yet, so nobody can sign in and no file can "
+                   "be reached from another device — every request is sent to the "
+                   "login page. Create an administrator account to start using "
+                   "NestDrive."));
         }
     };
 
@@ -146,16 +154,27 @@ void MainWindow::promptForFirstAdminIfNeeded()
         return;
     }
 
-    // Shown once, at first launch. Declining is allowed — the server still works
-    // without accounts today — but the banner then stays up.
+    // Shown once, at first launch. Leaving without creating one is allowed but has to
+    // be confirmed — the dialog explains that nothing is reachable until an account
+    // exists — and the banner then stays up.
     AccountDialog dialog(users, /*firstAdmin=*/true, this);
     dialog.exec();
 
     refreshWarning(users->count());
+    recordAccountCreated(dialog.createdUserId(), dialog.createdUsername());
+}
 
-    if (!dialog.createdUsername().isEmpty()) {
-        qInfo() << "[Auth] Administrator account created:" << dialog.createdUsername();
-    }
+void MainWindow::recordAccountCreated(int userId, const QString& username)
+{
+    if (username.isEmpty())
+        return;                    // Nothing was created.
+
+    qInfo() << "[Auth] Account created:" << username;
+
+    // The one audited event that happens in this window rather than over HTTP. There
+    // is no peer address because there is no request: it was done at the machine.
+    if (db::AuditLog* audit = m_fileServer->auditLog())
+        audit->recordUserCreate(userId, QStringLiteral("local"));
 }
 
 void MainWindow::onManageAccounts()
@@ -171,6 +190,7 @@ void MainWindow::onManageAccounts()
         return;
 
     m_accountWarning->setVisible(users->count() == 0);
+    recordAccountCreated(dialog.createdUserId(), dialog.createdUsername());
 
     QMessageBox::information(
         this, tr("Account created"),

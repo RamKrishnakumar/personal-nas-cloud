@@ -25,9 +25,15 @@ namespace auth { class UserStore; }
  *
  * ### First-run mode
  *
- * When no account exists the role is fixed to admin and the dialog cannot be
- * dismissed into a half-configured state — an installation with accounts but no
- * administrator has nobody who can create one.
+ * When no account exists the role is fixed to admin: an installation with accounts
+ * but no administrator has nobody who can create one.
+ *
+ * Dismissing it is possible but not accidental. Hiding Cancel was never enough —
+ * Escape and the window's close button both reach QDialog::reject() — and trapping
+ * someone in a modal they cannot leave is the wrong answer anyway, since opening the
+ * application to look at something should not require creating an account. So
+ * leaving without one asks for confirmation and says what the consequence is: with
+ * the gate in place since step 14, no account means nobody can sign in at all.
  */
 class AccountDialog : public QDialog
 {
@@ -43,6 +49,12 @@ public:
 
     /** Username that was created, once the dialog was accepted. */
     QString createdUsername() const { return m_createdUsername; }
+
+    /** Id of the created account, or 0 if none was. For the audit entry. */
+    int createdUserId() const { return m_createdUserId; }
+
+    /** Confirms first in first-run mode. Covers Escape and the close button. */
+    void reject() override;
 
 private slots:
     void onCreateClicked();
@@ -67,4 +79,5 @@ private:
 
     QThread* m_worker = nullptr;
     QString  m_createdUsername;
+    int      m_createdUserId = 0;
 };

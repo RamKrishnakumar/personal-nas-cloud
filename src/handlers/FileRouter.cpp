@@ -1,5 +1,6 @@
 #include "handlers/FileRouter.h"
 
+#include "db/AuditLog.h"
 #include "handlers/AuthHandler.h"
 #include "http/Connection.h"
 #include "http/MimeType.h"
@@ -233,10 +234,19 @@ void FileRouter::handle(http::Connection&        connection,
     }
 
     // Checked against the resolved location, not the requested one.
-    if (!context.permissionFor(nasRelativePath(*resolved)).read) {
+    const QString relative = nasRelativePath(*resolved);
+    if (!context.permissionFor(relative).read) {
         // 404 rather than 403 for a path the requester may not read. 403 would
         // confirm that the folder exists, which is exactly what a guest who is
         // probing for other people's albums is trying to learn.
+        //
+        // The log is the one place the distinction survives: the client is told only
+        // that there is nothing there, while the owner of the machine can see that
+        // someone asked for a path they have no grant on.
+        if (m_audit) {
+            m_audit->recordDownload(context.user.id, relative, -1,
+                                    connection.peerAddress(), 404);
+        }
         connection.sendError(404);
         return;
     }
@@ -255,6 +265,16 @@ void FileRouter::handle(http::Connection&        connection,
         // links working and bookmarkable while sending no listing markup at all.
         sendApplicationShell(connection);
         return;
+    }
+
+    // Recorded before the transfer rather than after it, so the row exists even if
+    // the client vanishes mid-download. `bytes` is therefore the size of the file
+    // asked for, not a count of bytes delivered — a Range request or an abandoned
+    // transfer moves fewer. An abandoned stream shows up in the application log,
+    // which is the right place for a transport event.
+    if (m_audit) {
+        m_audit->recordDownload(context.user.id, relative, info.size(),
+                                connection.peerAddress(), 200);
     }
 
     connection.sendFile(*resolved, wantsDownload(request.query));
@@ -360,6 +380,10 @@ void FileRouter::handleListApi(http::Connection& connection,
     // that will actually be read.
     const QString listedPath = nasRelativePath(*resolved);
     if (!context.permissionFor(listedPath).read) {
+        if (m_audit) {
+            m_audit->recordList(context.user.id, listedPath,
+                                connection.peerAddress(), 404);
+        }
         connection.sendError(404);
         return;
     }
@@ -431,6 +455,15 @@ void FileRouter::handleListApi(http::Connection& connection,
     const int limit  = std::clamp(query.value(QByteArrayLiteral("limit"),
                                               QStringLiteral("200")).toInt(),
                                  1, 1000);
+
+    // First page only. Scrolling a five-thousand-file folder issues twenty-five of
+    // these calls, and they all mean the same thing — "they opened this folder". One
+    // row per visit keeps that fact without burying every other entry in the table
+    // under pagination.
+    if (m_audit && offset == 0) {
+        m_audit->recordList(context.user.id, listedPath, connection.peerAddress(),
+                            200);
+    }
 
     const QString base = requestedPath.endsWith(QLatin1Char('/'))
                              ? requestedPath

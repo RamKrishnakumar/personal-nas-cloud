@@ -77,6 +77,8 @@ add_library(nestdrive_db STATIC
     src/db/Database.cpp
     src/db/Migrations.h
     src/db/Migrations.cpp
+    src/db/AuditLog.h
+    src/db/AuditLog.cpp
 )
 
 target_link_libraries(nestdrive_db PUBLIC Qt6::Core Qt6::Sql)

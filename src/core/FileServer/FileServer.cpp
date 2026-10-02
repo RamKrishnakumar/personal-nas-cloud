@@ -4,6 +4,7 @@
 #include "auth/PermissionStore.h"
 #include "auth/SessionStore.h"
 #include "auth/UserStore.h"
+#include "db/AuditLog.h"
 #include "handlers/AuthGate.h"
 #include "handlers/AuthHandler.h"
 #include "handlers/FileRouter.h"
@@ -43,6 +44,10 @@ FileServer::~FileServer()
 
     m_authentication.reset();   // Joins its hashing thread.
     m_limiter.reset();
+
+    // After the router and the auth handler, both of which hold a raw pointer to it.
+    m_audit.reset();
+
     m_folderPerms.reset();
     m_sessions.reset();
     m_users.reset();
@@ -82,9 +87,12 @@ void FileServer::setAccountStore(db::Database* database)
     m_sessions    = std::make_unique<auth::SessionStore>(database);
     m_folderPerms = std::make_unique<auth::PermissionStore>(database);
     m_limiter     = std::make_unique<auth::LoginRateLimiter>();
+    m_audit       = std::make_unique<db::AuditLog>(database);
 
     m_authentication = std::make_unique<handlers::AuthHandler>(
         m_users.get(), m_sessions.get(), m_limiter.get());
+    m_authentication->setAuditLog(m_audit.get());
+    m_router->setAuditLog(m_audit.get());
 
     // The gate becomes the server's router, with the file router behind it. Nothing
     // reaches the library without passing through here.
@@ -110,8 +118,24 @@ void FileServer::setAccountStore(db::Database* database)
         const int removed = m_sessions->sweepExpired();
         if (removed > 0)
             qInfo() << "[Auth] Retired" << removed << "expired sessions.";
+
+        // Shares the timer because it is the same shape of job and wants the same
+        // cadence. The audit table is the only one in the database with no natural
+        // ceiling: every folder opened adds a row, so without this it is the part
+        // that eventually makes the file large.
+        const int expired = m_audit->sweepOlderThan(db::AuditLog::DefaultRetentionDays);
+        if (expired > 0)
+            qInfo() << "[Audit] Discarded" << expired << "entries past retention.";
     });
     m_sessionSweeper->start();
+
+    // Once at startup as well as hourly. A machine that is only ever on for an hour
+    // at a time would otherwise never reach the first tick, and would keep entries
+    // for ever.
+    if (const int expired = m_audit->sweepOlderThan(db::AuditLog::DefaultRetentionDays);
+        expired > 0) {
+        qInfo() << "[Audit] Discarded" << expired << "entries past retention.";
+    }
 
     qInfo() << "[Auth] Accounts on record:" << m_users->count();
 

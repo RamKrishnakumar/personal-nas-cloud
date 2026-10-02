@@ -12,7 +12,7 @@ class PermissionStore;
 class SessionStore;
 class UserStore;
 }
-namespace db       { class Database; }
+namespace db       { class AuditLog; class Database; }
 namespace handlers { class AuthGate; class AuthHandler; class FileRouter; }
 namespace http     { class HttpServer; }
 namespace media    { class ThumbnailCache; class ThumbnailScanner; }
@@ -129,6 +129,15 @@ public:
      */
     auth::UserStore* accountStore() const { return m_users.get(); }
 
+    /**
+     * @brief The audit log, or null when setAccountStore() was never called.
+     *
+     * Exposed for the same reason as accountStore(): creating an account is the one
+     * audit-worthy thing that happens in the desktop window rather than over HTTP,
+     * so the window has to be able to record it.
+     */
+    db::AuditLog* auditLog() const { return m_audit.get(); }
+
 signals:
     void serverStarted(QString ip, quint16 port);
     void serverStopped();
@@ -142,6 +151,7 @@ private:
     std::unique_ptr<auth::SessionStore>     m_sessions;
     std::unique_ptr<auth::PermissionStore>  m_folderPerms;
     std::unique_ptr<auth::LoginRateLimiter> m_limiter;
+    std::unique_ptr<db::AuditLog>           m_audit;
     std::unique_ptr<handlers::AuthHandler>  m_authentication;
     std::unique_ptr<handlers::AuthGate>     m_gate;
 

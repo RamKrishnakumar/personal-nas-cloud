@@ -8,6 +8,7 @@
 #include <QFormLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QThread>
 #include <QVBoxLayout>
@@ -71,8 +72,9 @@ AccountDialog::AccountDialog(auth::UserStore* users, bool firstAdmin, QWidget* p
     auto* buttons = new QDialogButtonBox(this);
     m_create = buttons->addButton(tr("Create"), QDialogButtonBox::AcceptRole);
 
-    // No cancel on first run: an installation with no administrator has nobody who
-    // can create one, so dismissing here would leave it stuck.
+    // No cancel button on first run, so creating the account is the obvious action.
+    // Leaving is still possible via Escape or the window's close button, which
+    // reject() turns into an explicit question rather than a silent exit.
     if (!firstAdmin)
         m_cancel = buttons->addButton(QDialogButtonBox::Cancel);
 
@@ -96,6 +98,30 @@ AccountDialog::~AccountDialog()
         m_worker->wait();
         delete m_worker;
     }
+}
+
+void AccountDialog::reject()
+{
+    // A hashing worker holds `this`, and accepting a dismissal now would start
+    // tearing the dialog down while it runs. Waiting is wrong too — it would freeze
+    // the window for seconds — so the dismissal is simply ignored until it finishes,
+    // which is at most a few seconds away and is already explained on screen.
+    if (m_worker && m_worker->isRunning())
+        return;
+
+    if (m_firstAdmin) {
+        const auto answer = QMessageBox::question(
+            this, tr("Continue without an account?"),
+            tr("Without an account nobody can sign in, and no file will be reachable "
+               "from another device — every request is sent to the login page.\n\n"
+               "You can create one later with the Accounts button."),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+
+        if (answer != QMessageBox::Yes)
+            return;
+    }
+
+    QDialog::reject();
 }
 
 QString AccountDialog::validationError() const
@@ -165,8 +191,15 @@ void AccountDialog::onCreateClicked()
 
     const QString username = m_username->text().trimmed();
     const QString password = m_password->text();
-    const auto    role     = auth::roleFromString(
-        m_role->currentData().toString()).value_or(auth::Role::Guest);
+
+    // In first-run mode the role is not read from the widget at all. The combo is
+    // disabled and set to admin, so reading it would normally agree — but the
+    // fallback below is Guest, and a first "administrator" created as a guest would
+    // be an installation nobody can administer, with nothing on screen to say so.
+    const auto role = m_firstAdmin
+                          ? auth::Role::Admin
+                          : auth::roleFromString(m_role->currentData().toString())
+                                .value_or(auth::Role::Guest);
 
     setBusy(true);
     showMessage(tr("Creating the account. This takes a few seconds — the password "
@@ -180,16 +213,22 @@ void AccountDialog::onCreateClicked()
         m_worker = nullptr;
     }
 
-    auto* result = new QString;   // Owned by the lambdas below.
+    // Owned by the lambdas below. The id is carried out alongside the error because
+    // the audit entry needs it, and looking the account up again afterwards would be
+    // a second query for something this call already returned.
+    struct Outcome { QString error; int id = 0; };
+    auto* result = new Outcome;
 
     m_worker = QThread::create([this, username, password, role, result]() {
         QString error;
         const int id = m_users->create(username, password, role, &error);
-        *result = (id > 0) ? QString() : error;
+        result->id    = id;
+        result->error = (id > 0) ? QString() : error;
     });
 
     connect(m_worker, &QThread::finished, this, [this, username, result]() {
-        const QString error = *result;
+        const QString error = result->error;
+        const int     id    = result->id;
         delete result;
 
         setBusy(false);
@@ -203,6 +242,7 @@ void AccountDialog::onCreateClicked()
         }
 
         m_createdUsername = auth::UserStore::normaliseUsername(username);
+        m_createdUserId   = id;
         accept();
     });
 

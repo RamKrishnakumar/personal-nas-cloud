@@ -4,6 +4,7 @@
 #include "auth/PasswordHash.h"
 #include "auth/SessionStore.h"
 #include "auth/UserStore.h"
+#include "db/AuditLog.h"
 #include "http/Connection.h"
 #include "http/Cookies.h"
 #include "http/RequestParser.h"
@@ -234,6 +235,11 @@ void AuthHandler::handleLogin(http::Connection& connection,
     // Checked before any hashing, so a throttled attacker costs no CPU at all.
     const auth::RateLimitDecision decision = m_limiter->check(username, address);
     if (!decision.allowed) {
+        // Recorded, because a run of these is the clearest sign in the log that
+        // someone is working through a password list. The 429 distinguishes it from
+        // an ordinary rejection without needing a second action name.
+        recordLoginFailure(username, address, 429);
+
         const QByteArray retryAfter =
             "Retry-After: " + QByteArray::number(decision.retryAfterSeconds) + "\r\n";
         sendJsonError(connection, 429,
@@ -310,6 +316,24 @@ void AuthHandler::verifyCredentials(quint64        requestId,
     emit loginResolved(requestId, accepted, userId);
 }
 
+void AuthHandler::recordLoginFailure(const QString& username, const QString& address,
+                                     int status)
+{
+    if (!m_audit)
+        return;
+
+    // An extra indexed lookup on a path that has either just spent over a second
+    // hashing or been throttled outright, so the cost is noise. It cannot be used to
+    // generate load either: failures are rate-limited before reaching here.
+    int userId = 0;
+    if (m_users) {
+        if (const auto user = m_users->findByUsername(username))
+            userId = user->id;
+    }
+
+    m_audit->recordLoginFailure(userId, address, status);
+}
+
 void AuthHandler::completeLogin(http::Connection&    connection,
                                 const http::Request& request,
                                 bool                 accepted,
@@ -321,6 +345,7 @@ void AuthHandler::completeLogin(http::Connection&    connection,
 
     if (!accepted) {
         m_limiter->recordFailure(username, address);
+        recordLoginFailure(username, address, 401);
         sendJsonError(connection, 401, QString::fromLatin1(RejectionMessage));
         return;
     }
@@ -344,6 +369,9 @@ void AuthHandler::completeLogin(http::Connection&    connection,
 
     m_users->recordLogin(userId);
 
+    if (m_audit)
+        m_audit->recordLogin(userId, address);
+
     const auto user = m_users->findById(userId);
 
     QJsonObject body;
@@ -364,8 +392,16 @@ void AuthHandler::handleLogout(http::Connection& connection,
 {
     if (m_sessions) {
         const QByteArray token = http::cookieValue(request, SessionCookieName);
-        if (!token.isEmpty())
+        if (!token.isEmpty()) {
+            // Resolved before the session is destroyed: afterwards there is no way
+            // left to say whose sign-out this was.
+            if (m_audit) {
+                if (const auto session = m_sessions->validate(token))
+                    m_audit->recordLogout(session->userId, connection.peerAddress());
+            }
+
             m_sessions->destroy(token);
+        }
     }
 
     // The cookie is cleared even when there was no session to destroy, so a stale

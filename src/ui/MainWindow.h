@@ -90,6 +90,14 @@ private:
     /** Prompts for the administrator account when none exists yet. */
     void promptForFirstAdminIfNeeded();
 
+    /**
+     * @brief Logs and audits a newly created account. A no-op when none was.
+     *
+     * Shared by both entry points, because an account created from the Accounts
+     * button is exactly as worth recording as the first one.
+     */
+    void recordAccountCreated(int userId, const QString& username);
+
     // ── UI Widget Members ──────────────────────────────────────────────────────
     // Initialized to nullptr so they have a safe default value before
     // setupUI() assigns real objects to them.

@@ -12,6 +12,8 @@ class SessionStore;
 class UserStore;
 }
 
+namespace db { class AuditLog; }
+
 namespace http {
 class Connection;
 struct Request;
@@ -66,6 +68,15 @@ public:
                 QObject*                parent = nullptr);
     ~AuthHandler() override;
 
+    /**
+     * @brief Records sign-ins, sign-outs and failures.
+     *
+     * Optional: without it everything still works and nothing is written down. Kept
+     * a setter rather than a constructor argument because the three existing test
+     * suites construct this handler and none of them is about auditing.
+     */
+    void setAuditLog(db::AuditLog* audit) { m_audit = audit; }
+
     /** True when @p path is one this handler owns, in any accepted spelling. */
     static bool handles(const QByteArray& path);
 
@@ -112,6 +123,18 @@ private:
                            const QString& username,
                            const QString& password);
 
+    /**
+     * @brief Audits a rejected attempt, naming the account only if it exists.
+     *
+     * The lookup is the point. There is no column for the username that was tried,
+     * and adding one would mean storing whatever was typed into that box — which is
+     * sometimes a password. Resolving it to an id first means an existing account is
+     * identified and a typo, or a password typed in the wrong field, is recorded as
+     * an anonymous failure from an address and nothing more.
+     */
+    void recordLoginFailure(const QString& username, const QString& address,
+                            int status);
+
     /** Issues the cookie and the success body, or answers 401. */
     void completeLogin(http::Connection& connection,
                        const http::Request& request,
@@ -123,6 +146,7 @@ private:
     auth::UserStore*        m_users    = nullptr;
     auth::SessionStore*     m_sessions = nullptr;
     auth::LoginRateLimiter* m_limiter  = nullptr;
+    db::AuditLog*           m_audit    = nullptr;
 
     QThreadPool* m_hasher = nullptr;   ///< Exactly one thread.
 
