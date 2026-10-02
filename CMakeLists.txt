@@ -121,6 +121,8 @@ add_library(nestdrive_media STATIC
     src/media/ThumbnailScanner.cpp
     src/media/FrameExtractor.h
     src/media/FrameExtractor.cpp
+    src/media/VideoTranscoder.h
+    src/media/VideoTranscoder.cpp
 )
 
 set_target_properties(nestdrive_media PROPERTIES AUTOMOC ON)

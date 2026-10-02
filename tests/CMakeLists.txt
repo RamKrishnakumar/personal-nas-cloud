@@ -43,15 +43,26 @@ qt_add_executable(fake_ffmpeg fixtures/fake_ffmpeg.cpp)
 target_link_libraries(fake_ffmpeg PRIVATE Qt6::Core Qt6::Gui)
 set_target_properties(fake_ffmpeg PROPERTIES WIN32_EXECUTABLE FALSE)
 
-nestdrive_add_test(frameextractor LIBRARIES nestdrive_media)
+# The same binary again under the other name. VideoTranscoder finds ffprobe by
+# substituting the filename beside ffmpeg, which is how every distribution ships the
+# pair — so the fixture has to exist under both names, and the source switches on
+# which one it was invoked as. Two targets from one source rather than two sources
+# that would drift apart.
+qt_add_executable(fake_ffprobe fixtures/fake_ffmpeg.cpp)
+target_link_libraries(fake_ffprobe PRIVATE Qt6::Core Qt6::Gui)
+set_target_properties(fake_ffprobe PROPERTIES WIN32_EXECUTABLE FALSE)
 
-# Both suites run the fixture, so it has to exist first. Passed as a define rather
+nestdrive_add_test(frameextractor LIBRARIES nestdrive_media)
+nestdrive_add_test(videotranscoder LIBRARIES nestdrive_media)
+
+# These suites run the fixtures, so they have to exist first. Passed as defines rather
 # than discovered at runtime: guessing at a sibling path is exactly the kind of thing
 # that works in one build layout and silently skips the tests in another.
-foreach(suite frameextractor thumbnailcache thumbnailscanner)
-    add_dependencies(tst_${suite} fake_ffmpeg)
+foreach(suite frameextractor videotranscoder thumbnailcache thumbnailscanner)
+    add_dependencies(tst_${suite} fake_ffmpeg fake_ffprobe)
     target_compile_definitions(tst_${suite} PRIVATE
         FAKE_FFMPEG_PATH="$<TARGET_FILE:fake_ffmpeg>"
+        FAKE_FFPROBE_PATH="$<TARGET_FILE:fake_ffprobe>"
     )
 endforeach()
 

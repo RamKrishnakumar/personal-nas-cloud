@@ -48,6 +48,7 @@
 #include "http/HttpServer.h"
 #include "media/FrameExtractor.h"
 #include "media/ThumbnailCache.h"
+#include "media/VideoTranscoder.h"
 
 #if defined(Q_OS_WIN)
 #  include <windows.h>
@@ -113,6 +114,8 @@ struct Reply
     qint64     bodyBytes = 0;
     QByteArray body;
     QByteArray etag;
+    QByteArray cacheControl;
+    QByteArray acceptRanges;
     bool       ok() const { return status >= 200 && status < 400; }
 };
 
@@ -145,24 +148,37 @@ public:
     Reply get(const QByteArray& target, const QByteArray& ifNoneMatch = {},
               bool allowGzip = true)
     {
+        QByteArray extra;
+        if (allowGzip)
+            extra += "Accept-Encoding: gzip\r\n";
+        if (!ifNoneMatch.isEmpty())
+            extra += "If-None-Match: " + ifNoneMatch + "\r\n";
+
+        return request("GET", target, extra);
+    }
+
+    /** @param extraHeaders Already CRLF-terminated, one per line. */
+    Reply request(const QByteArray& method, const QByteArray& target,
+                  const QByteArray& extraHeaders = {})
+    {
         Reply reply;
 
         if (!ensureConnected())
             return reply;
 
-        QByteArray request = "GET " + target + " HTTP/1.1\r\n"
+        QByteArray request = method + " " + target + " HTTP/1.1\r\n"
                              "Host: bench\r\n"
-                             "Cookie: nd_session=" + m_token + "\r\n";
-        if (allowGzip)
-            request += "Accept-Encoding: gzip\r\n";
-        if (!ifNoneMatch.isEmpty())
-            request += "If-None-Match: " + ifNoneMatch + "\r\n";
-        request += "\r\n";
+                             "Cookie: nd_session=" + m_token + "\r\n"
+                           + extraHeaders + "\r\n";
 
         m_socket->write(request);
         m_socket->flush();
 
-        if (!readReply(&reply)) {
+        // HEAD declares a Content-Length that describes what a GET would return, and
+        // sends no body. Reading one would block until the stall timeout.
+        const bool bodyExpected = (method != "HEAD");
+
+        if (!readReply(&reply, bodyExpected)) {
             // A closed connection mid-exchange: reopen once and retry, so one
             // dropped keep-alive does not abort the whole run.
             disconnect();
@@ -170,7 +186,7 @@ public:
                 return reply;
             m_socket->write(request);
             m_socket->flush();
-            readReply(&reply);
+            readReply(&reply, bodyExpected);
         }
 
         return reply;
@@ -195,7 +211,7 @@ private:
         return true;
     }
 
-    bool readReply(Reply* reply)
+    bool readReply(Reply* reply, bool bodyExpected = true)
     {
         QByteArray buffer;
 
@@ -223,12 +239,16 @@ private:
                 contentLength = line.mid(line.indexOf(':') + 1).trimmed().toLongLong();
             else if (lower.startsWith("etag:"))
                 reply->etag = line.mid(line.indexOf(':') + 1).trimmed();
+            else if (lower.startsWith("cache-control:"))
+                reply->cacheControl = line.mid(line.indexOf(':') + 1).trimmed();
+            else if (lower.startsWith("accept-ranges:"))
+                reply->acceptRanges = line.mid(line.indexOf(':') + 1).trimmed();
             else if (lower.startsWith("connection:") && lower.contains("close"))
                 closeAfter = true;
         }
 
         // 304 carries no body however it declares its length.
-        if (reply->status == 304)
+        if (reply->status == 304 || !bodyExpected)
             contentLength = 0;
 
         while (buffer.size() - (headerEnd + 4) < contentLength) {
@@ -339,6 +359,38 @@ struct FolderMeasurement
     int thumbnailsMissing = 0;   ///< Entries the listing offered no thumbnail for.
 };
 
+/**
+ * @brief Measures the request sequence a video player actually makes.
+ *
+ * §5.9 of the plan says this is to be measured and not guessed at, and the three
+ * candidate causes it lists need different evidence: response headers, a slot that
+ * was not released, and a `moov` atom at the end of the file. Only the last two show
+ * up as timing, and they look nothing alike.
+ */
+struct VideoMeasurement
+{
+    QString name;
+    qint64  fileSize = 0;
+
+    qint64 headMs = 0;
+
+    qint64 firstChunkMs    = 0;   ///< What a player fetches to start parsing.
+    qint64 firstChunkBytes = 0;
+
+    qint64 tailMs    = 0;         ///< The `moov` hunt on a non-faststart file.
+    qint64 tailBytes = 0;
+
+    qint64 sustainedMs    = 0;    ///< Throughput ceiling, disk plus loopback.
+    qint64 sustainedBytes = 0;
+
+    int    revalidateStatus = 0;  ///< 304 means the client can reuse what it holds.
+    qint64 revalidateMs     = 0;
+
+    bool   acceptsRanges = false;
+    QByteArray cacheControl;
+    QByteArray etag;
+};
+
 /** Everything the measurement run needs from the stack main() assembled. */
 struct Context
 {
@@ -352,7 +404,10 @@ struct Context
     media::ThumbnailCache* thumbnails = nullptr;
 };
 
-int runMeasurements(const Context& context);
+int  runMeasurements(const Context& context);
+void measureVideoPlayback(const Context& context, const QJsonArray& entries,
+                          const QString& folder);
+int  runTranscodeCheck(const QString& sourcePath);
 
 } // namespace
 
@@ -377,11 +432,25 @@ int main(int argc, char** argv)
     const QCommandLineOption keepCacheOption(
         QStringLiteral("keep-cache"),
         QStringLiteral("Reuse an existing thumbnail cache instead of starting cold."));
+    const QCommandLineOption transcodeOption(
+        QStringLiteral("transcode"),
+        QStringLiteral("Transcode this video with the real ffmpeg and report, "
+                       "instead of running the serving measurements."),
+        QStringLiteral("file"));
 
     parser.addOption(rootOption);
     parser.addOption(countOption);
     parser.addOption(keepCacheOption);
+    parser.addOption(transcodeOption);
     parser.process(application);
+
+    // ── Transcode check ───────────────────────────────────────────────────
+    // Exercises media::VideoTranscoder against the real binary and a real file. The
+    // unit suite drives a fixture, which by construction cannot catch anything ffmpeg
+    // itself decides — the `-vf` rejection on HEIF tiles in §5.7.2 was exactly that,
+    // and it had passed every fixture test.
+    if (parser.isSet(transcodeOption))
+        return runTranscodeCheck(parser.value(transcodeOption));
 
     // ── Workspace ─────────────────────────────────────────────────────────
     QTemporaryDir workspace;
@@ -768,6 +837,264 @@ int runMeasurements(const Context& context)
           << " | cache on disk: " << humanBytes(thumbnails.totalBytes()) << "\n";
     out().flush();
 
+    measureVideoPlayback(context, entries, targetFolder);
+
+    return 0;
+}
+
+/**
+ * @brief Reproduces what a player does on open, and times each part.
+ *
+ * Picks the largest video in the listing. Chosen over an average because the
+ * complaint is about large 4K clips, and a 2 MB one would behave fine whatever is
+ * wrong.
+ */
+void measureVideoPlayback(const Context& context, const QJsonArray& entries,
+                          const QString& folder)
+{
+    Q_UNUSED(folder)
+
+    QByteArray target;
+    VideoMeasurement video;
+
+    for (const QJsonValue& value : entries) {
+        const QJsonObject entry = value.toObject();
+        if (entry.value(QStringLiteral("k")).toString() != QLatin1String("video"))
+            continue;
+
+        const qint64 bytes = qint64(entry.value(QStringLiteral("s")).toDouble());
+        if (bytes > video.fileSize) {
+            video.fileSize = bytes;
+            video.name     = entry.value(QStringLiteral("n")).toString();
+            target         = entry.value(QStringLiteral("u")).toString().toUtf8();
+        }
+    }
+
+    if (target.isEmpty()) {
+        out() << "\nNo video in this folder; playback not measured.\n";
+        out().flush();
+        return;
+    }
+
+    Client client(context.port, context.token);
+    QElapsedTimer timer;
+
+    // ── 1. The probe app.js makes before every play ───────────────────────
+    timer.start();
+    const Reply head = client.request("HEAD", target);
+    video.headMs       = timer.elapsed();
+    video.acceptsRanges = !head.acceptRanges.isEmpty();
+    video.cacheControl  = head.cacheControl;
+    video.etag          = head.etag;
+
+    // ── 2. The opening chunk a player parses ──────────────────────────────
+    timer.restart();
+    const Reply first = client.get(target, {}, false);   // Server ignores gzip here.
+    video.firstChunkMs    = timer.elapsed();
+    video.firstChunkBytes = first.bodyBytes;
+
+    // Re-requested as a bounded range, which is what a player really sends.
+    {
+        Client ranged(context.port, context.token);
+        timer.restart();
+        const Reply chunk = ranged.request(
+            "GET", target, "Range: bytes=0-1048575\r\n");
+        video.firstChunkMs    = timer.elapsed();
+        video.firstChunkBytes = chunk.bodyBytes;
+    }
+
+    // ── 3. The moov hunt ──────────────────────────────────────────────────
+    // A file whose index sits at the end forces this before a single frame can be
+    // decoded: fetch the tail, then seek back to the start. On a spinning disk that
+    // is a full-stroke seek, and it is §5.9's third candidate.
+    {
+        Client tail(context.port, context.token);
+        const qint64 tailSize = qMin<qint64>(256 * 1024, video.fileSize);
+        const QByteArray range = "Range: bytes="
+                                 + QByteArray::number(video.fileSize - tailSize) + '-'
+                                 + QByteArray::number(video.fileSize - 1) + "\r\n";
+        timer.restart();
+        const Reply reply = tail.request("GET", target, range);
+        video.tailMs    = timer.elapsed();
+        video.tailBytes = reply.bodyBytes;
+    }
+
+    // ── 4. Throughput ceiling ─────────────────────────────────────────────
+    // What the disk and the server can actually sustain, which bounds everything
+    // else. If this is below the file's bitrate, no amount of caching helps.
+    {
+        Client bulk(context.port, context.token);
+        const qint64 window = qMin<qint64>(64LL * 1024 * 1024, video.fileSize);
+        const QByteArray range = "Range: bytes=0-"
+                                 + QByteArray::number(window - 1) + "\r\n";
+        timer.restart();
+        const Reply reply = bulk.request("GET", target, range);
+        video.sustainedMs    = timer.elapsed();
+        video.sustainedBytes = reply.bodyBytes;
+    }
+
+    // ── 5. Can a client reuse what it already holds? ──────────────────────
+    {
+        Client again(context.port, context.token);
+        timer.restart();
+        const Reply reply = again.request(
+            "GET", target, "If-None-Match: " + video.etag + "\r\n");
+        video.revalidateMs     = timer.elapsed();
+        video.revalidateStatus = reply.status;
+    }
+
+    // ── Report ────────────────────────────────────────────────────────────
+    const double seconds = video.sustainedMs / 1000.0;
+    const double mbps = seconds > 0
+                            ? (video.sustainedBytes * 8.0) / (seconds * 1000000.0)
+                            : 0.0;
+
+    out() << "\n### Video playback, §5.9 — measured\n\n";
+    out() << "File: `" << video.name << "`, " << humanBytes(video.fileSize) << "\n\n";
+
+    out() << "| Step | Measured |\n|---|---|\n";
+    out() << "| HEAD probe (app.js sends one before every play) | " << video.headMs
+          << " ms |\n";
+    out() << "| First 1 MB, ranged | " << video.firstChunkMs << " ms |\n";
+    out() << "| Tail " << humanBytes(video.tailBytes)
+          << " — the `moov` hunt | " << video.tailMs << " ms |\n";
+    out() << "| Sustained read of " << humanBytes(video.sustainedBytes) << " | "
+          << video.sustainedMs << " ms = **"
+          << QString::number(mbps, 'f', 0) << " Mbps** |\n";
+    out() << "| Revalidate with If-None-Match | " << video.revalidateStatus
+          << " in " << video.revalidateMs << " ms |\n";
+    out() << "| `Accept-Ranges` | " << (video.acceptsRanges ? "yes" : "**missing**")
+          << " |\n";
+    out() << "| `Cache-Control` | `" << video.cacheControl << "` |\n";
+    out() << "| `ETag` | " << (video.etag.isEmpty() ? "**missing**" : "present")
+          << " |\n";
+
+    if (video.fileSize > 0 && seconds > 0) {
+        out() << "\nServer can deliver this file at roughly "
+              << QString::number(mbps, 'f', 0)
+              << " Mbps over loopback, which is the ceiling before any network.\n";
+    }
+
+    out().flush();
+}
+
+int runTranscodeCheck(const QString& sourcePath)
+{
+    const media::FrameExtractor frames;
+    if (!frames.isAvailable()) {
+        out() << "No ffmpeg found, so there is nothing to check.\n";
+        return 1;
+    }
+
+    const media::VideoTranscoder transcoder(frames.executable());
+    if (!transcoder.isAvailable()) {
+        out() << "ffmpeg is present but ffprobe is not beside it.\n";
+        return 1;
+    }
+
+    out() << "ffmpeg:  " << transcoder.ffmpegPath() << "\n";
+    out() << "ffprobe: " << transcoder.ffprobePath() << "\n\n";
+
+    const auto profile = transcoder.probe(sourcePath);
+    if (!profile) {
+        out() << "Could not probe " << sourcePath << "\n";
+        return 1;
+    }
+
+    QString reason;
+    const media::TranscodeNeed need = media::VideoTranscoder::assess(*profile, &reason);
+
+    const QFileInfo sourceInfo(sourcePath);
+
+    out() << "Source: " << sourceInfo.fileName() << "\n";
+    out() << "  " << profile->width << "x" << profile->height << " "
+          << profile->videoCodec << " " << profile->pixelFormat
+          << (profile->isHdr() ? " HDR" : "") << "\n";
+    out() << "  " << QString::number(profile->bitrateBps / 1'000'000.0, 'f', 1)
+          << " Mbps, " << QString::number(profile->durationMs / 1000.0, 'f', 1)
+          << " s, " << humanBytes(sourceInfo.size()) << "\n";
+    out() << "  verdict: "
+          << (need == media::TranscodeNeed::Recommended ? "transcode"
+              : need == media::TranscodeNeed::NotNeeded ? "serve as-is"
+                                                        : "unknown")
+          << " — " << reason << "\n\n";
+
+    if (need != media::TranscodeNeed::Recommended) {
+        out() << "Nothing to do.\n";
+        return 0;
+    }
+
+    out() << "Filter chain:\n  "
+          << media::VideoTranscoder::filterChain(*profile) << "\n\n";
+
+    QTemporaryDir workspace;
+    const QString destination = workspace.filePath(QStringLiteral("out.mp4"));
+
+    out() << "Transcoding";
+    out().flush();
+
+    QElapsedTimer timer;
+    timer.start();
+
+    QString error;
+    int lastShown = -1;
+    const bool ok = transcoder.transcode(
+        sourcePath, destination, *profile,
+        [&lastShown](int percent) {
+            if (percent / 10 != lastShown / 10) {
+                lastShown = percent;
+                out() << " " << percent << "%";
+                out().flush();
+            }
+            return true;
+        },
+        &error);
+
+    const qint64 elapsed = timer.elapsed();
+    out() << "\n\n";
+
+    if (!ok) {
+        out() << "FAILED after " << elapsed << " ms: " << error << "\n";
+        return 1;
+    }
+
+    const QFileInfo produced(destination);
+    const double ratePerSecond =
+        elapsed > 0 ? double(profile->durationMs) / double(elapsed) : 0.0;
+    const double outputMbps =
+        profile->durationMs > 0
+            ? (produced.size() * 8.0) / (profile->durationMs / 1000.0) / 1'000'000.0
+            : 0.0;
+
+    out() << "| Result | Value |\n|---|---|\n";
+    out() << "| Elapsed | " << elapsed << " ms for "
+          << QString::number(profile->durationMs / 1000.0, 'f', 1)
+          << " s of video |\n";
+    out() << "| Speed | **" << QString::number(ratePerSecond, 'f', 2)
+          << "x realtime** |\n";
+    out() << "| Output size | " << humanBytes(produced.size()) << " from "
+          << humanBytes(sourceInfo.size()) << " ("
+          << QString::number(double(sourceInfo.size()) / double(produced.size()),
+                             'f', 0)
+          << "x smaller) |\n";
+    out() << "| Output bitrate | **" << QString::number(outputMbps, 'f', 2)
+          << " Mbps** from "
+          << QString::number(profile->bitrateBps / 1'000'000.0, 'f', 1) << " Mbps |\n";
+
+    const auto result = transcoder.probe(destination);
+    if (result) {
+        out() << "| Output stream | " << result->width << "x" << result->height
+              << " " << result->videoCodec << " " << result->pixelFormat
+              << (result->isHdr() ? " (still HDR!)" : " SDR") << " |\n";
+        out() << "| Re-assessed | "
+              << (media::VideoTranscoder::assess(*result)
+                      == media::TranscodeNeed::NotNeeded
+                      ? "serve as-is ✅"
+                      : "**still wants transcoding**")
+              << " |\n";
+    }
+
+    out().flush();
     return 0;
 }
 
