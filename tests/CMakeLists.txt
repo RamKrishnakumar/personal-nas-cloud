@@ -36,6 +36,25 @@ endforeach()
 nestdrive_add_test(thumbnailcache LIBRARIES nestdrive_media)
 nestdrive_add_test(thumbnailscanner LIBRARIES nestdrive_media)
 
+# A stand-in for the ffmpeg CLI. Built rather than scripted because QProcess has to
+# launch it the same way it launches the real thing, and because a .bat is not
+# consistently seen as executable across the two toolchains.
+qt_add_executable(fake_ffmpeg fixtures/fake_ffmpeg.cpp)
+target_link_libraries(fake_ffmpeg PRIVATE Qt6::Core Qt6::Gui)
+set_target_properties(fake_ffmpeg PROPERTIES WIN32_EXECUTABLE FALSE)
+
+nestdrive_add_test(frameextractor LIBRARIES nestdrive_media)
+
+# Both suites run the fixture, so it has to exist first. Passed as a define rather
+# than discovered at runtime: guessing at a sibling path is exactly the kind of thing
+# that works in one build layout and silently skips the tests in another.
+foreach(suite frameextractor thumbnailcache thumbnailscanner)
+    add_dependencies(tst_${suite} fake_ffmpeg)
+    target_compile_definitions(tst_${suite} PRIVATE
+        FAKE_FFMPEG_PATH="$<TARGET_FILE:fake_ffmpeg>"
+    )
+endforeach()
+
 # Integration: real sockets against the worker pool.
 nestdrive_add_test(httpserver LIBRARIES nestdrive_handlers)
 nestdrive_add_test(admissionserver LIBRARIES nestdrive_handlers)

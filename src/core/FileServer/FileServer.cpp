@@ -10,6 +10,7 @@
 #include "handlers/FileRouter.h"
 #include "http/HardwareTier.h"
 #include "http/HttpServer.h"
+#include "media/FrameExtractor.h"
 #include "media/ThumbnailCache.h"
 #include "media/ThumbnailScanner.h"
 
@@ -41,6 +42,7 @@ FileServer::~FileServer()
     m_router.reset();
     m_scanner.reset();      // Joins its thread before the cache it uses goes away.
     m_thumbnails.reset();
+    m_frames.reset();       // Held by the cache above.
 
     m_authentication.reset();   // Joins its hashing thread.
     m_limiter.reset();
@@ -53,6 +55,24 @@ FileServer::~FileServer()
     m_users.reset();
 }
 
+bool FileServer::setFrameExtractor(const QString& executableOverride)
+{
+    m_frames = std::make_unique<media::FrameExtractor>(executableOverride);
+
+    // Handed over here as well, covering the case where this is called after the
+    // store was already built. Without it the order of the two calls would silently
+    // decide whether videos get thumbnails.
+    if (m_thumbnails)
+        m_thumbnails->setFrameExtractor(m_frames.get());
+
+    return m_frames->isAvailable();
+}
+
+QString FileServer::frameExtractorVersion() const
+{
+    return m_frames ? m_frames->versionLine() : QString();
+}
+
 void FileServer::setThumbnailStore(db::Database* database, const QString& cacheDirectory)
 {
     // Generator threads come from the same tier detection as everything else, but
@@ -62,6 +82,11 @@ void FileServer::setThumbnailStore(db::Database* database, const QString& cacheD
 
     m_thumbnails = std::make_unique<media::ThumbnailCache>(
         database, cacheDirectory, detected.thumbnailThreads);
+
+    // Before the router and the scanner see the cache, because both ask it what it
+    // can generate for and the answer depends on this.
+    if (m_frames)
+        m_thumbnails->setFrameExtractor(m_frames.get());
 
     m_router->setThumbnailCache(m_thumbnails.get());
 
@@ -75,7 +100,9 @@ void FileServer::setThumbnailStore(db::Database* database, const QString& cacheD
 
     qInfo() << "[Thumbs] Cache at" << cacheDirectory
             << "| format" << m_thumbnails->outputFormat()
-            << "| generators" << detected.thumbnailThreads;
+            << "| generators" << detected.thumbnailThreads
+            << "| video and HEIC"
+            << ((m_frames && m_frames->isAvailable()) ? "on" : "off (no ffmpeg)");
 }
 
 void FileServer::setAccountStore(db::Database* database)

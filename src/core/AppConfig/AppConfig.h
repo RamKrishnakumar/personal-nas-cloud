@@ -42,6 +42,16 @@ public:
     QString  certPath()     const;   ///< path to PEM certificate file
     QString  keyPath()      const;   ///< path to RSA private key file
 
+    // ── Media (Step 17) ──────────────────────────────────────────────────
+    /**
+     * @brief Path to an ffmpeg binary, or empty to search the usual places.
+     *
+     * Empty is the normal setting: media::FrameExtractor then looks beside the
+     * application and on PATH. Set it only to point at a specific build — a
+     * configured path that does not exist is reported and then ignored.
+     */
+    QString  ffmpegPath()   const;
+
     // ── Meta ─────────────────────────────────────────────────────────────
     /**
      * @brief Returns true if config.ini was found and loaded successfully.

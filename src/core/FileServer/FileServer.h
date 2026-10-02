@@ -15,7 +15,7 @@ class UserStore;
 namespace db       { class AuditLog; class Database; }
 namespace handlers { class AuthGate; class AuthHandler; class FileRouter; }
 namespace http     { class HttpServer; }
-namespace media    { class ThumbnailCache; class ThumbnailScanner; }
+namespace media    { class FrameExtractor; class ThumbnailCache; class ThumbnailScanner; }
 
 class QTimer;
 
@@ -97,6 +97,23 @@ public:
     void setThumbnailStore(db::Database* database, const QString& cacheDirectory);
 
     /**
+     * @brief Enables thumbnails for videos and HEIC photos via ffmpeg.
+     *
+     * Must be called before setThumbnailStore(), which is what hands the extractor
+     * to the cache. Probing the binary costs one subprocess, done here rather than
+     * per thumbnail.
+     *
+     * @param executableOverride From config.ini, or empty to search beside the
+     *                           application and then PATH.
+     * @return true when a usable binary was found. False is an ordinary outcome:
+     *         those files then keep their placeholder, exactly as before step 17.
+     */
+    bool setFrameExtractor(const QString& executableOverride);
+
+    /** Describes the ffmpeg binary in use, or empty when there is none. */
+    QString frameExtractorVersion() const;
+
+    /**
      * @brief Enables background warming of the thumbnail cache.
      *
      * Requires setThumbnailStore() first. The scan starts with the server and stops
@@ -144,6 +161,7 @@ signals:
 
 private:
     std::unique_ptr<handlers::FileRouter>  m_router;
+    std::unique_ptr<media::FrameExtractor>   m_frames;
     std::unique_ptr<media::ThumbnailCache>   m_thumbnails;
     std::unique_ptr<media::ThumbnailScanner> m_scanner;
 

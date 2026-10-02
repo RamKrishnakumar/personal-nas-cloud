@@ -398,7 +398,11 @@ void ThumbnailScanner::enqueueChildren(const QString& directoryPath)
         return;
 
     for (const QFileInfo& entry : directory.entryInfoList(QDir::Files)) {
-        if (!ThumbnailCache::isSupportedImage(entry.fileName()))
+        // Asks the cache rather than testing Qt's formats directly, so videos and
+        // HEIC photos are warmed too once ffmpeg is present. That is the whole point
+        // of warming them: a poster frame costs a subprocess, which is far too slow
+        // to want to pay while someone is waiting for a folder to paint.
+        if (!m_cache->canGenerateFor(entry.fileName()))
             continue;
 
         // A directory that changed is swept again, which would otherwise re-queue
@@ -420,16 +424,28 @@ bool ThumbnailScanner::directoryNeedsSweep(const QString& directoryPath) const
     if (!m_database || !m_database->isOpen())
         return true;        // No record to consult; sweep it.
 
-    qint64 sweptAt = 0;
+    qint64     sweptAt   = 0;
+    QByteArray sweptCaps;
     {
         auto handle = m_database->lock();
         QSqlQuery query(handle.connection());
-        query.prepare(QStringLiteral("SELECT done_at FROM scan_state WHERE path = ?"));
+        query.prepare(QStringLiteral(
+            "SELECT done_at, caps FROM scan_state WHERE path = ?"));
         query.addBindValue(directoryPath);
         if (!query.exec() || !query.next())
             return true;
-        sweptAt = query.value(0).toLongLong();
+        sweptAt   = query.value(0).toLongLong();
+        sweptCaps = query.value(1).toByteArray();
     }
+
+    // Swept when we could read less than we can now, so the directory is not
+    // actually finished. This is what step 17 needed and did not have: adding videos
+    // and HEIC left every folder marked done, so none was ever warmed and they
+    // generated one at a time on first view. Installing ffmpeg later, or Qt's
+    // image-format plugins, has exactly the same effect — and is handled here rather
+    // than by another migration each time.
+    if (sweptCaps != m_cache->capabilityFingerprint())
+        return true;
 
     // Revisited when its contents changed since the last sweep, which is how new
     // photos get picked up without walking the whole library again.
@@ -447,9 +463,14 @@ void ThumbnailScanner::recordDirectorySwept(const QString& directoryPath)
     auto handle = m_database->lock();
     QSqlQuery query(handle.connection());
     query.prepare(QStringLiteral(
-        "INSERT OR REPLACE INTO scan_state (path, done_at) VALUES (?, ?)"));
+        "INSERT OR REPLACE INTO scan_state (path, done_at, caps) VALUES (?, ?, ?)"));
     query.addBindValue(directoryPath);
     query.addBindValue(QDateTime::currentSecsSinceEpoch());
+
+    // Recorded as a fact about this sweep, not as configuration: it says what the
+    // sweep was capable of, so a later run can tell whether it is still good enough.
+    query.addBindValue(QString::fromLatin1(m_cache->capabilityFingerprint()));
+
     query.exec();
 }
 

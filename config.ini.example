@@ -32,6 +32,22 @@ useHttps=false
 certPath=cert.pem
 keyPath=key.pem
 
+[Media]
+
+; Path to an ffmpeg binary, used for video poster frames and HEIC photo
+; thumbnails. Without it those files show a placeholder icon; everything else
+; works exactly the same.
+;
+; Leave blank for the normal behaviour, which is to look next to the executable
+; first and then on PATH. Set it only to point at a specific build — a path that
+; does not exist is reported once at startup and then ignored.
+;
+; To enable it, either put ffmpeg(.exe) beside the executable or install it:
+;     Windows:  winget install Gyan.FFmpeg
+;     macOS:    brew install ffmpeg
+;     Debian:   sudo apt install ffmpeg
+ffmpegPath=
+
 [DDNS]
 
 ; No-IP credentials, used to keep your hostname pointing at your current WAN IP.

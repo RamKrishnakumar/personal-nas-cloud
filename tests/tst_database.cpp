@@ -249,7 +249,15 @@ void TestDatabase::upgradesAnOlderDatabaseInPlace()
             "INSERT INTO users (id, username, pw_hash, role, enabled, created_at) "
             "VALUES (1, 'keepme', 'hash', 'admin', 1, 100)")));
 
-        // Wind the file back to version 2 by removing what version 3 added.
+        // A swept directory, as a real installation would have hundreds of.
+        QVERIFY(query.exec(QStringLiteral(
+            "INSERT INTO scan_state (path, done_at) VALUES ('E:/Photos', 100)")));
+
+        // Wind the file back to version 2 by removing what 3 and 4 added, so this
+        // covers a multi-step upgrade rather than only the most recent one.
+        QVERIFY2(query.exec(QStringLiteral(
+                     "ALTER TABLE scan_state DROP COLUMN caps")),
+                 qPrintable(query.lastError().text()));
         QVERIFY2(query.exec(QStringLiteral(
                      "ALTER TABLE sessions DROP COLUMN idle_seconds")),
                  qPrintable(query.lastError().text()));
@@ -263,12 +271,23 @@ void TestDatabase::upgradesAnOlderDatabaseInPlace()
     auto handle = upgraded.lock();
     QSqlQuery query(handle.connection());
 
-    // The column is back, with the default the migration declared.
+    // Both columns are back, each with the default its migration declared.
     QVERIFY(query.exec(QStringLiteral("SELECT idle_seconds FROM sessions")));
 
     QVERIFY(query.exec(QStringLiteral("SELECT username FROM users WHERE id = 1")));
     QVERIFY2(query.next(), "The upgrade lost existing rows");
     QCOMPARE(query.value(0).toString(), QStringLiteral("keepme"));
+
+    // The sweep record survives, and its capabilities come back empty. That empty
+    // value is the whole mechanism: it matches no real fingerprint, so every
+    // directory swept before the upgrade is swept once more — which is what makes
+    // videos and HEIC get warmed in a library that was already fully scanned.
+    QVERIFY(query.exec(QStringLiteral(
+        "SELECT done_at, caps FROM scan_state WHERE path = 'E:/Photos'")));
+    QVERIFY2(query.next(), "The upgrade lost the sweep records");
+    QCOMPARE(query.value(0).toLongLong(), 100);
+    QVERIFY2(query.value(1).toString().isEmpty(),
+             "an upgraded sweep record must not claim any capabilities");
 }
 
 void TestDatabase::newerSchemaIsRefused()

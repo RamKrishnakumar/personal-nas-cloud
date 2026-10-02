@@ -11,9 +11,11 @@
 #include <QThread>
 
 #include "db/Database.h"
+#include "media/FrameExtractor.h"
 #include "media/ThumbnailCache.h"
 #include "media/ThumbnailScanner.h"
 
+using media::FrameExtractor;
 using media::ThumbnailCache;
 using media::ThumbnailScanner;
 using media::ThumbTier;
@@ -68,6 +70,7 @@ private slots:
     void stopsWhenTheCacheIsFull();
     void recordsProgressSoARestartResumes();
     void rescansADirectoryThatChanged();
+    void rescansEverythingWhenItLearnsToReadANewFormat();
     void stopIsHonoured();
     void handlesAMissingRoot();
     void doesNotFollowDirectorySymlinks();
@@ -80,6 +83,7 @@ private:
 
     std::unique_ptr<QTemporaryDir>   m_tmp;
     std::unique_ptr<db::Database>    m_database;
+    std::unique_ptr<FrameExtractor>  m_frames;
     std::unique_ptr<ThumbnailCache>  m_cache;
     std::unique_ptr<ThumbnailScanner> m_scanner;
 };
@@ -115,6 +119,7 @@ void TestThumbnailScanner::cleanup()
 {
     m_scanner.reset();
     m_cache.reset();
+    m_frames.reset();        // Held by the cache above.
     m_database.reset();
     m_tmp.reset();
 }
@@ -242,6 +247,52 @@ void TestThumbnailScanner::rescansADirectoryThatChanged()
     QVERIFY2(m_scanner->progress().filesExamined > 0,
              "A changed directory was not rescanned");
     QVERIFY(m_cache->hit(path(QStringLiteral("nas/Album/2024/new.png")), ThumbTier::Small));
+}
+
+void TestThumbnailScanner::rescansEverythingWhenItLearnsToReadANewFormat()
+{
+    // The step 17 bug, reproduced. A library already fully swept stays marked as
+    // finished, so when the application learns to read a new format nothing warms it
+    // and every one of those files is generated on first view instead — a subprocess
+    // at a time, while somebody waits for the folder to paint.
+    //
+    // Observed in the field as "142 directories, 0 files examined" on a machine where
+    // ffmpeg had just been installed.
+    {
+        QFile clip(path(QStringLiteral("nas/Album/2024/clip.mp4")));
+        QVERIFY(clip.open(QIODevice::WriteOnly));
+        clip.write(QByteArray(2048, 'v'));
+    }
+
+    // Pass one, with no extractor: the clip is not something we can read yet.
+    m_scanner->start();
+    QVERIFY(spinUntil([this] { return !m_scanner->isRunning(); }));
+    QCOMPARE(m_scanner->progress().filesExamined, 7);
+    QVERIFY(!m_cache->hit(path(QStringLiteral("nas/Album/2024/clip.mp4")),
+                          ThumbTier::Small).has_value());
+
+    // Pass two changes nothing, which is the behaviour that makes running on every
+    // launch cheap — and also what hid the bug.
+    m_scanner->start();
+    QVERIFY(spinUntil([this] { return !m_scanner->isRunning(); }));
+    QCOMPARE(m_scanner->progress().filesExamined, 0);
+
+    // Now ffmpeg appears. Nothing on disk changed, so every directory modification
+    // time is older than its sweep — the only thing that differs is what we can read.
+    qputenv("FAKE_FFMPEG_MODE", "ok");
+    m_frames = std::make_unique<FrameExtractor>(QStringLiteral(FAKE_FFMPEG_PATH));
+    QVERIFY(m_frames->isAvailable());
+    m_cache->setFrameExtractor(m_frames.get());
+
+    m_scanner->start();
+    QVERIFY(spinUntil([this] { return !m_scanner->isRunning(); }));
+
+    QVERIFY2(m_scanner->progress().filesExamined > 0,
+             "a library that can now be read further was not swept again");
+
+    QVERIFY2(m_cache->hit(path(QStringLiteral("nas/Album/2024/clip.mp4")),
+                          ThumbTier::Small).has_value(),
+             "the newly readable video was not warmed");
 }
 
 void TestThumbnailScanner::stopIsHonoured()

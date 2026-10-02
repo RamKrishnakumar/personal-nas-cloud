@@ -497,20 +497,33 @@ void FileRouter::handleListApi(http::Connection& connection,
         const QString url = base + encodeSegment(entry.fileName());
         item[QStringLiteral("u")] = url;
 
-        // Thumbnail URLs are produced here so the client never has to derive a
-        // cache key. Only for formats Qt can decode: HEIC is an image by type but
-        // unreadable without an extra decoder, and asking would waste a round trip.
-        // The same applies to a file whose extension lies — a `.JPG` that is really
-        // a QuickTime movie — once one attempt has established that.
-        if (isImage && m_thumbnails
-            && media::ThumbnailCache::isSupportedImage(entry.fileName())
+        // Thumbnail URLs are produced here so the client never has to derive a cache
+        // key. Offered only where one can actually be produced, which canGenerateFor()
+        // answers: Qt-readable images always, and videos and HEIC photos once step 17
+        // put ffmpeg behind them. Without that binary those two go back to a
+        // placeholder rather than to a URL guaranteed to 404.
+        //
+        // Also skipped for a file whose extension lies — a `.JPG` that is really a
+        // QuickTime movie — once one attempt has established as much.
+        // The MIME prefix is deliberately not part of this test. canGenerateFor() is
+        // the authority on what can be thumbnailed, and the two disagree at the
+        // edges — `.hif` is a HEIF photo ffmpeg reads happily but is absent from the
+        // MIME table, so gating on `image/*` would silently exclude it.
+        if (m_thumbnails
+            && m_thumbnails->canGenerateFor(entry.fileName())
             && !m_thumbnails->isKnownUndecodable(
                    entry.absoluteFilePath(),
                    entry.lastModified().toMSecsSinceEpoch(), entry.size())) {
             item[QStringLiteral("t")] =
                 buildThumbnailUrl(entry, url, media::ThumbTier::Small);
-            item[QStringLiteral("p")] =
-                buildThumbnailUrl(entry, url, media::ThumbTier::Medium);
+
+            // Grid tier only for a video. The overlay plays the file itself, so a
+            // 1280 px poster frame would never be fetched — and generating one means
+            // a second ffmpeg process per video for an image nothing displays.
+            if (!isVideo) {
+                item[QStringLiteral("p")] =
+                    buildThumbnailUrl(entry, url, media::ThumbTier::Medium);
+            }
         }
 
         items.append(item);

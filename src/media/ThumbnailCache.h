@@ -2,6 +2,7 @@
 
 #include <QByteArray>
 #include <QHash>
+#include <QImage>
 #include <QMutex>
 #include <QObject>
 #include <QSet>
@@ -15,6 +16,8 @@ namespace db { class Database; }
 class QThreadPool;
 
 namespace media {
+
+class FrameExtractor;
 
 /**
  * @brief Which size of thumbnail is wanted.
@@ -122,6 +125,51 @@ public:
     static bool isSupportedImage(const QString& path);
 
     /**
+     * @brief Supplies the ffmpeg wrapper that handles videos and HEIC photos.
+     *
+     * Optional, and must be set before serving starts — it is read without a lock
+     * from every generator thread, which is only safe because it never changes
+     * afterwards. Must outlive this cache.
+     *
+     * Without it, canGenerateFor() is false for those files and nothing attempts
+     * them, which is the behaviour from steps 10 through 16.
+     */
+    void setFrameExtractor(const FrameExtractor* frames) { m_frames = frames; }
+
+    /**
+     * @brief True when a thumbnail could be produced for @p path.
+     *
+     * The single predicate for "is it worth offering a thumbnail URL for this".
+     * Consulted by the listing API as well as internally, so the client is never
+     * handed a URL that is certain to fail — before step 17 that meant Qt-readable
+     * images only, and now it also means videos and HEIC when ffmpeg is present.
+     *
+     * Extension-based, so it answers without touching the file. Whether the bytes
+     * really are what the name claims is a separate question, answered once per file
+     * version by isKnownUndecodable().
+     */
+    bool canGenerateFor(const QString& path) const;
+
+    /**
+     * @brief Short tag describing everything this cache can currently decode.
+     *
+     * Exists for one reason: the background scanner records a directory as swept, and
+     * a directory swept under narrower rules is not actually finished. Step 17 made
+     * that concrete — adding videos and HEIC left every already-swept folder marked
+     * done, so nothing warmed them and they only generated on first view. The same
+     * thing happens whenever the readable set widens: ffmpeg installed later, or Qt's
+     * image-format plugins added.
+     *
+     * Storing this alongside the sweep record turns that into a self-correcting
+     * condition rather than something needing a migration each time: a fingerprint
+     * that no longer matches means sweep again.
+     *
+     * Derived from the suffixes actually accepted, so it changes exactly when the
+     * answer to canGenerateFor() changes and not otherwise.
+     */
+    QByteArray capabilityFingerprint() const;
+
+    /**
      * @brief True when this exact file version has already failed to decode.
      *
      * The extension is only a hint. An iPhone backup contains QuickTime movies and
@@ -198,6 +246,22 @@ private:
                   ThumbTier         tier,
                   const QString&    destinationPath);
 
+    /**
+     * @brief Produces an image from @p sourcePath, however that has to happen.
+     *
+     * Either one ffmpeg pass into @p scratchPath followed by reading that back, or
+     * Qt's own reader with its scaled-decode path. Returns a null image on failure,
+     * with @p error set to something worth putting in the log and in the
+     * decode-failure record.
+     *
+     * The two routes are behind one function so generate() has a single failure
+     * branch. @p scratchPath is removed before returning, whatever happened.
+     */
+    QImage decodeToImage(const QString& sourcePath,
+                         int            longEdge,
+                         const QString& scratchPath,
+                         QString*       error) const;
+
     void recordInIndex(const QByteArray& key, const QString& sourcePath,
                        qint64 modifiedMsecs, qint64 sourceSize,
                        ThumbTier tier, qint64 bytes);
@@ -207,7 +271,9 @@ private:
     void recordDecodeFailure(const QString& sourcePath, const QString& reason);
     void loadDecodeFailures();
 
-    db::Database* m_database = nullptr;
+    db::Database*         m_database = nullptr;
+    const FrameExtractor* m_frames   = nullptr;
+
     QString       m_cacheDirectory;
     QByteArray    m_outputFormat;      ///< "webp", or "jpeg" when WebP is absent.
     int           m_quality = 72;

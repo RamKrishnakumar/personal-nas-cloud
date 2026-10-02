@@ -97,6 +97,11 @@ MainWindow::MainWindow(db::Database* database, QWidget* parent)
     }
 
     // ── Thumbnails ────────────────────────────────────────────────────────────
+    // Before the store, which is what passes the extractor on to the cache. Looks
+    // beside the application and then on PATH when the config key is empty, which it
+    // is by default.
+    m_fileServer->setFrameExtractor(m_config.ffmpegPath());
+
     // The grid points at 320 px copies instead of originals, which is what makes a
     // folder of photos usable over a slow link.
     m_fileServer->setThumbnailStore(m_database, app::paths::thumbnailDirectory());

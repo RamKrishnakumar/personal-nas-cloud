@@ -1,6 +1,7 @@
 #include "media/ThumbnailCache.h"
 
 #include "db/Database.h"
+#include "media/FrameExtractor.h"
 
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -172,6 +173,44 @@ bool ThumbnailCache::isSupportedImage(const QString& path)
     return readable.contains(QFileInfo(path).suffix().toLower().toUtf8());
 }
 
+bool ThumbnailCache::canGenerateFor(const QString& path) const
+{
+    if (isSupportedImage(path))
+        return true;
+
+    // Only when the binary is actually there. Claiming a video can be thumbnailed on
+    // a machine without ffmpeg would hand the client a URL that is guaranteed to
+    // fail, which is worse than the placeholder it would have shown instead.
+    return m_frames && m_frames->isAvailable() && FrameExtractor::handles(path);
+}
+
+QByteArray ThumbnailCache::capabilityFingerprint() const
+{
+    QStringList suffixes;
+
+    for (const QByteArray& format : QImageReader::supportedImageFormats())
+        suffixes.append(QString::fromUtf8(format).toLower());
+
+    if (m_frames && m_frames->isAvailable())
+        suffixes += FrameExtractor::handledSuffixes();
+
+    // Sorted and deduplicated, so the same capabilities always produce the same tag
+    // regardless of the order Qt reports its plugins in.
+    suffixes.sort();
+    suffixes.removeDuplicates();
+
+    // The output format is part of it: switching from JPEG to WebP, which happens
+    // when Qt Image Formats is installed, means the existing thumbnails are in the
+    // wrong format and the library is worth sweeping again.
+    const QByteArray material =
+        suffixes.join(QLatin1Char(',')).toUtf8() + '|' + m_outputFormat;
+
+    // Truncated because this is only ever compared for equality, and a short tag
+    // keeps the scan_state rows small.
+    return QCryptographicHash::hash(material, QCryptographicHash::Sha256)
+        .left(8).toHex();
+}
+
 bool ThumbnailCache::isKnownUndecodable(const QString& sourcePath,
                                        qint64         modifiedMsecs,
                                        qint64         sourceSize) const
@@ -235,7 +274,7 @@ void ThumbnailCache::requestAsync(const QString& sourcePath,
     }
 
     const QFileInfo info(sourcePath);
-    if (!info.exists() || !isSupportedImage(sourcePath)) {
+    if (!info.exists() || !canGenerateFor(sourcePath)) {
         handler(false, QString());
         return;
     }
@@ -286,7 +325,7 @@ bool ThumbnailCache::generateBlocking(const QString& sourcePath, ThumbTier tier)
         return true;
 
     const QFileInfo info(sourcePath);
-    if (!info.exists() || !isSupportedImage(sourcePath))
+    if (!info.exists() || !canGenerateFor(sourcePath))
         return false;
 
     if (isKnownUndecodable(sourcePath, info.lastModified().toMSecsSinceEpoch(),
@@ -316,16 +355,35 @@ bool ThumbnailCache::generateBlocking(const QString& sourcePath, ThumbTier tier)
 //  Generation
 // ─────────────────────────────────────────────────────────────────────────────
 
-void ThumbnailCache::generate(const QByteArray& key,
-                              const QString&    sourcePath,
-                              ThumbTier         tier,
-                              const QString&    destinationPath)
+QImage ThumbnailCache::decodeToImage(const QString& sourcePath,
+                                     int            longEdge,
+                                     const QString& scratchPath,
+                                     QString*       error) const
 {
-    bool    ok = false;
-    QString produced;
+    // ── Files Qt cannot read ──────────────────────────────────────────────
+    // Videos and HEIC photos. One ffmpeg pass produces a still, which is then read
+    // back through the ordinary path below — so the WebP encoder, the quality
+    // setting and the size ceiling stay in one place rather than being taught to
+    // ffmpeg as well.
+    if (m_frames && m_frames->isAvailable() && FrameExtractor::handles(sourcePath)) {
+        if (!m_frames->extractStill(sourcePath, scratchPath, longEdge, error))
+            return {};
 
-    const int longEdge = tierLongEdge(tier);
+        // No scaled decode: the still is already at or below the target size, and
+        // PNG has no sub-scale decoding to exploit anyway.
+        QImage still(scratchPath);
 
+        // Removed whether or not it read: leaving these behind would fill the cache
+        // directory with intermediates nothing ever looks at again.
+        QFile::remove(scratchPath);
+
+        if (still.isNull() && error) {
+            *error = QStringLiteral("ffmpeg produced a still that could not be read");
+        }
+        return still;
+    }
+
+    // ── The ordinary path ─────────────────────────────────────────────────
     QImageReader reader(sourcePath);
 
     // Honours EXIF orientation. Without it, photos taken in portrait appear
@@ -348,6 +406,29 @@ void ThumbnailCache::generate(const QByteArray& key,
     }
 
     QImage image = reader.read();
+    if (image.isNull() && error)
+        *error = reader.errorString();
+
+    return image;
+}
+
+void ThumbnailCache::generate(const QByteArray& key,
+                              const QString&    sourcePath,
+                              ThumbTier         tier,
+                              const QString&    destinationPath)
+{
+    bool    ok = false;
+    QString produced;
+
+    const int longEdge = tierLongEdge(tier);
+
+    // Shares the destination's directory and carries the final name, so two
+    // generators can never pick the same scratch path — the key already makes the
+    // destination unique, and the in-flight set stops two threads sharing a key.
+    const QString scratchPath = destinationPath + QStringLiteral(".still.png");
+
+    QString decodeError;
+    QImage  image = decodeToImage(sourcePath, longEdge, scratchPath, &decodeError);
 
     if (!image.isNull()) {
         // Safety net: formats without a scaled-decode path, and the case where an
@@ -395,8 +476,8 @@ void ThumbnailCache::generate(const QByteArray& key,
         // Common cause on a phone backup: the extension lies. iOS exports
         // QuickTime movies and XML sidecars with a .JPG name.
         qWarning() << "[Thumbs] Cannot decode, will not retry:" << sourcePath
-                   << ':' << reader.errorString();
-        recordDecodeFailure(sourcePath, reader.errorString());
+                   << ':' << decodeError;
+        recordDecodeFailure(sourcePath, decodeError);
     }
 
     if (ok) {

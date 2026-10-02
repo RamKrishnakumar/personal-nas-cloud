@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QDirIterator>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QImage>
@@ -11,8 +12,10 @@
 #include <QThread>
 
 #include "db/Database.h"
+#include "media/FrameExtractor.h"
 #include "media/ThumbnailCache.h"
 
+using media::FrameExtractor;
 using media::ThumbnailCache;
 using media::ThumbTier;
 
@@ -84,6 +87,14 @@ private slots:
     void retriesOnceTheFileChanges();
     void remembersFailuresAcrossRestarts();
 
+    // ── Videos and HEIC, via the frame extractor ─────────────────────────
+    void offersNothingForAVideoWithoutAnExtractor();
+    void offersThumbnailsForVideoAndHeicWithOne();
+    void generatesAThumbnailForAVideo();
+    void theIntermediateStillIsNotLeftBehind();
+    void aFileTheExtractorCannotReadIsRemembered();
+    void theCapabilityFingerprintChangesWithAnExtractor();
+
     // ── Eviction ─────────────────────────────────────────────────────────
     void evictionKeepsTheCacheUnderItsCeiling();
 
@@ -93,9 +104,20 @@ private:
         return m_tmp->path() + QLatin1Char('/') + name;
     }
 
+    /** A file with the right extension and arbitrary contents. */
+    bool writePlaceholder(const QString& name) const
+    {
+        QFile file(sourcePath(name));
+        if (!file.open(QIODevice::WriteOnly))
+            return false;
+        // Non-trivial length, so the cache key is not derived from a zero size.
+        return file.write(QByteArray(4096, 'm')) == 4096;
+    }
+
     std::unique_ptr<QTemporaryDir> m_tmp;
     std::unique_ptr<db::Database>  m_database;
     std::unique_ptr<ThumbnailCache> m_cache;
+    std::unique_ptr<FrameExtractor> m_frames;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -116,6 +138,7 @@ void TestThumbnailCache::init()
 void TestThumbnailCache::cleanup()
 {
     m_cache.reset();
+    m_frames.reset();        // Held by the cache above.
     m_database.reset();
     m_tmp.reset();
 }
@@ -434,6 +457,139 @@ void TestThumbnailCache::remembersFailuresAcrossRestarts()
     ThumbnailCache reopened(m_database.get(), m_tmp->path() + QStringLiteral("/thumbs"), 1);
     QVERIFY2(reopened.isKnownUndecodable(source),
              "Failures were not loaded from the index on construction");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Videos and HEIC, via the frame extractor
+//
+//  Driven through the fake_ffmpeg fixture rather than the real binary — see
+//  tst_frameextractor for why. What these cover is the join between the two: that
+//  the cache asks the extractor for the files Qt cannot read, puts the result
+//  through its own encoder, and treats a failure the same way it treats any other
+//  undecodable file.
+// ─────────────────────────────────────────────────────────────────────────────
+
+void TestThumbnailCache::offersNothingForAVideoWithoutAnExtractor()
+{
+    // The state of the application from step 10 to step 16, and still the state on a
+    // machine with no ffmpeg. It has to stay a working configuration rather than
+    // becoming a broken one.
+    QVERIFY(writePlaceholder(QStringLiteral("clip.mp4")));
+
+    QVERIFY(!m_cache->canGenerateFor(QStringLiteral("clip.mp4")));
+    QVERIFY(!m_cache->canGenerateFor(QStringLiteral("photo.heic")));
+
+    // And nothing is attempted, so no decode-failure row is written either — the file
+    // is not undecodable, it is simply not something we offer to decode.
+    QVERIFY(!m_cache->generateBlocking(sourcePath(QStringLiteral("clip.mp4")),
+                                       ThumbTier::Small));
+    QVERIFY(!m_cache->isKnownUndecodable(sourcePath(QStringLiteral("clip.mp4"))));
+}
+
+void TestThumbnailCache::offersThumbnailsForVideoAndHeicWithOne()
+{
+    qputenv("FAKE_FFMPEG_MODE", "ok");
+    m_frames = std::make_unique<FrameExtractor>(QStringLiteral(FAKE_FFMPEG_PATH));
+    QVERIFY(m_frames->isAvailable());
+
+    m_cache->setFrameExtractor(m_frames.get());
+
+    QVERIFY(m_cache->canGenerateFor(QStringLiteral("clip.mp4")));
+    QVERIFY(m_cache->canGenerateFor(QStringLiteral("photo.heic")));
+
+    // Unchanged for everything else: a JPEG must keep going through Qt's reader and
+    // its scaled-decode path, not through a subprocess.
+    QVERIFY(m_cache->canGenerateFor(QStringLiteral("photo.jpg")));
+    QVERIFY(!m_cache->canGenerateFor(QStringLiteral("notes.txt")));
+}
+
+void TestThumbnailCache::generatesAThumbnailForAVideo()
+{
+    qputenv("FAKE_FFMPEG_MODE", "ok");
+    m_frames = std::make_unique<FrameExtractor>(QStringLiteral(FAKE_FFMPEG_PATH));
+    m_cache->setFrameExtractor(m_frames.get());
+
+    QVERIFY(writePlaceholder(QStringLiteral("clip.mp4")));
+    const QString source = sourcePath(QStringLiteral("clip.mp4"));
+
+    QVERIFY(m_cache->generateBlocking(source, ThumbTier::Small));
+
+    const auto cached = m_cache->hit(source, ThumbTier::Small);
+    QVERIFY(cached.has_value());
+
+    // In the cache's own format, not ffmpeg's. The still is an intermediate; the
+    // thumbnail that gets served has to come out of the same encoder at the same
+    // quality as every other thumbnail, or the format and the size budget in §5.4
+    // would depend on which decoder happened to read the source.
+    const QImage thumbnail(*cached);
+    QVERIFY2(!thumbnail.isNull(), qPrintable(*cached));
+    QVERIFY(thumbnail.width() <= media::tierLongEdge(ThumbTier::Small));
+    QVERIFY(thumbnail.height() <= media::tierLongEdge(ThumbTier::Small));
+
+    QCOMPARE(QFileInfo(*cached).suffix().toUtf8(), m_cache->outputFormat());
+}
+
+void TestThumbnailCache::theIntermediateStillIsNotLeftBehind()
+{
+    qputenv("FAKE_FFMPEG_MODE", "ok");
+    m_frames = std::make_unique<FrameExtractor>(QStringLiteral(FAKE_FFMPEG_PATH));
+    m_cache->setFrameExtractor(m_frames.get());
+
+    QVERIFY(writePlaceholder(QStringLiteral("clip.mp4")));
+    QVERIFY(m_cache->generateBlocking(sourcePath(QStringLiteral("clip.mp4")),
+                                      ThumbTier::Small));
+
+    // The intermediate PNG is written into the cache directory, so if it were left
+    // behind it would count towards the size ceiling and be evicted as though it were
+    // a thumbnail — while never being served to anybody.
+    QDirIterator leftovers(m_tmp->path() + QStringLiteral("/thumbs"),
+                           { QStringLiteral("*.still.png") },
+                           QDir::Files, QDirIterator::Subdirectories);
+
+    QVERIFY2(!leftovers.hasNext(),
+             qPrintable(QStringLiteral("intermediate left behind: %1")
+                            .arg(leftovers.next())));
+}
+
+void TestThumbnailCache::aFileTheExtractorCannotReadIsRemembered()
+{
+    // ffmpeg exiting 0 without writing anything — which it really does — must land in
+    // the same negative cache as a `.JPG` that is really a movie. Without that, every
+    // visit to a folder of unsupported clips spawns a process per file, for ever.
+    qputenv("FAKE_FFMPEG_MODE", "silent_success");
+    m_frames = std::make_unique<FrameExtractor>(QStringLiteral(FAKE_FFMPEG_PATH));
+    QVERIFY(m_frames->isAvailable());
+    m_cache->setFrameExtractor(m_frames.get());
+
+    QVERIFY(writePlaceholder(QStringLiteral("broken.mp4")));
+    const QString source = sourcePath(QStringLiteral("broken.mp4"));
+
+    QVERIFY(!m_cache->generateBlocking(source, ThumbTier::Small));
+    QVERIFY2(m_cache->isKnownUndecodable(source),
+             "a file ffmpeg could not produce a frame from must not be retried");
+
+    // Restored, so a later test in this process is not affected by the mode.
+    qputenv("FAKE_FFMPEG_MODE", "ok");
+}
+
+void TestThumbnailCache::theCapabilityFingerprintChangesWithAnExtractor()
+{
+    // What the background scanner stores next to each swept directory, so it can tell
+    // that it can now read more than it could when it last looked. If this did not
+    // change, a library already scanned would never be warmed for the new formats.
+    const QByteArray withoutFfmpeg = m_cache->capabilityFingerprint();
+    QVERIFY(!withoutFfmpeg.isEmpty());
+
+    // Stable across calls, or every launch would re-sweep the whole library.
+    QCOMPARE(m_cache->capabilityFingerprint(), withoutFfmpeg);
+
+    qputenv("FAKE_FFMPEG_MODE", "ok");
+    m_frames = std::make_unique<FrameExtractor>(QStringLiteral(FAKE_FFMPEG_PATH));
+    QVERIFY(m_frames->isAvailable());
+    m_cache->setFrameExtractor(m_frames.get());
+
+    QVERIFY2(m_cache->capabilityFingerprint() != withoutFfmpeg,
+             "gaining ffmpeg must change the fingerprint, or nothing is re-swept");
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

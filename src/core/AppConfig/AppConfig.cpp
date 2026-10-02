@@ -106,6 +106,12 @@ void AppConfig::writeStarterConfig()
     m_settings.setValue("Server/useHttps", false);
     m_settings.setValue("Server/certPath", "cert.pem");
     m_settings.setValue("Server/keyPath",  "key.pem");
+
+    // Empty on purpose. The empty value means "look beside the application, then on
+    // PATH", which is what should happen by default — writing a guess here would
+    // instead produce a warning about a path that does not exist on most machines.
+    m_settings.setValue("Media/ffmpegPath", "");
+
     m_settings.setValue("DDNS/username",   "");
     m_settings.setValue("DDNS/password",   "");
     m_settings.setValue("DDNS/hostname",   "");
@@ -154,6 +160,7 @@ QString AppConfig::nasRoot() const
 bool    AppConfig::useHttps()  const { return m_settings.value("Server/useHttps", false).toBool(); }
 QString AppConfig::certPath()  const { return m_settings.value("Server/certPath", "cert.pem").toString(); }
 QString AppConfig::keyPath()   const { return m_settings.value("Server/keyPath",  "key.pem").toString(); }
+QString AppConfig::ffmpegPath() const { return m_settings.value("Media/ffmpegPath", "").toString().trimmed(); }
 
 
 

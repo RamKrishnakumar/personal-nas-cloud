@@ -151,6 +151,29 @@ QStringList schemaVersion3()
     };
 }
 
+/**
+ * Schema version 4 — what the scanner could decode when it swept a directory.
+ *
+ * `scan_state` recorded only that a directory was finished, and the scanner skips a
+ * directory whose contents have not changed since. That is right for new photos and
+ * wrong for new *abilities*: step 17 added videos and HEIC, and every folder already
+ * marked swept stayed marked, so nothing warmed them and they generated one at a time
+ * on first view. Installing ffmpeg later, or Qt's image-format plugins, causes exactly
+ * the same thing.
+ *
+ * Storing the capability fingerprint next to the timestamp makes it self-correcting,
+ * so no future widening needs a migration of its own. The empty default matches no
+ * real fingerprint, which is what re-sweeps everything once on upgrade — no DELETE
+ * needed, and the same mechanism does both jobs.
+ */
+QStringList schemaVersion4()
+{
+    return {
+        QStringLiteral("ALTER TABLE scan_state "
+                       "ADD COLUMN caps TEXT NOT NULL DEFAULT ''"),
+    };
+}
+
 /** Runs one statement, reporting the failing SQL rather than just the driver text. */
 bool runStatement(QSqlDatabase& connection, const QString& sql, QString* error)
 {
@@ -222,6 +245,9 @@ bool applyMigrations(QSqlDatabase& connection, QString* error)
             break;
         case 3:
             statements = schemaVersion3();
+            break;
+        case 4:
+            statements = schemaVersion4();
             break;
         default:
             if (error)
