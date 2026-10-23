@@ -4,6 +4,7 @@
 #include "auth/PermissionStore.h"
 #include "auth/SessionStore.h"
 #include "auth/UserStore.h"
+#include "core/Tls/TlsConfig.h"
 #include "db/AuditLog.h"
 #include "handlers/AuthGate.h"
 #include "handlers/AuthHandler.h"
@@ -16,15 +17,10 @@
 #include "media/VideoStore.h"
 #include "media/VideoTranscoder.h"
 
-#include <QCoreApplication>
 #include <QDebug>
-#include <QDir>
-#include <QFile>
 #include <QHostAddress>
 #include <QNetworkInterface>
 #include <QSslCertificate>
-#include <QSslKey>
-#include <QSslSocket>
 #include <QTimer>
 
 FileServer::FileServer(QObject* parent)
@@ -238,52 +234,37 @@ void FileServer::setNasRoot(const QString& path)
 
 bool FileServer::loadTlsFiles(const QString& certificatePath, const QString& privateKeyPath)
 {
-    const auto resolve = [](const QString& path) {
-        return QDir::isAbsolutePath(path)
-                   ? path
-                   : QCoreApplication::applicationDirPath() + QLatin1Char('/') + path;
-    };
+    // The work is in core::loadTls(), in nestdrive_core, so that a test can reach
+    // it. While it lived here it was compiled only into the application executable
+    // and no suite could link it — which is why it spent two releases silently
+    // refusing every non-RSA key and discarding every intermediate certificate.
+    const std::optional<QSslConfiguration> configuration =
+        core::loadTls(certificatePath, privateKeyPath, &m_tlsErrorString);
 
-    const QString certFilePath = resolve(certificatePath);
-    const QString keyFilePath  = resolve(privateKeyPath);
-
-    QFile certFile(certFilePath);
-    if (!certFile.open(QIODevice::ReadOnly)) {
-        m_tlsErrorString = QStringLiteral("Certificate file not found: %1").arg(certFilePath);
+    if (!configuration)
         return false;
-    }
-    const QSslCertificate certificate(&certFile, QSsl::Pem);
-    certFile.close();
 
-    if (certificate.isNull()) {
-        m_tlsErrorString = QStringLiteral("Certificate is not valid PEM: %1").arg(certFilePath);
-        return false;
-    }
+    m_sslConfiguration = *configuration;
 
-    QFile keyFile(keyFilePath);
-    if (!keyFile.open(QIODevice::ReadOnly)) {
-        m_tlsErrorString = QStringLiteral("Private key file not found: %1").arg(keyFilePath);
-        return false;
-    }
-    const QSslKey privateKey(&keyFile, QSsl::Rsa, QSsl::Pem);
-    keyFile.close();
+    const QList<QSslCertificate> chain = m_sslConfiguration.localCertificateChain();
 
-    if (privateKey.isNull()) {
-        m_tlsErrorString = QStringLiteral("Private key is not a valid RSA PEM key: %1")
-                               .arg(keyFilePath);
-        return false;
-    }
+    qInfo() << "[TLS] ✅ Certificate loaded:" << certificatePath
+            << "| expires" << chain.first().expiryDate().toString(Qt::ISODate)
+            << "| chain of" << chain.size();
+    qInfo() << "[TLS] Backend:" << core::describeTlsBackend();
 
-    m_sslConfiguration = QSslConfiguration::defaultConfiguration();
-    m_sslConfiguration.setLocalCertificate(certificate);
-    m_sslConfiguration.setPrivateKey(privateKey);
-    m_sslConfiguration.setProtocol(QSsl::TlsV1_2OrLater);
-    m_sslConfiguration.setPeerVerifyMode(QSslSocket::VerifyNone);
-
-    m_tlsErrorString.clear();
-    qInfo() << "[TLS] ✅ Certificate loaded:" << certFilePath
-            << "| expires" << certificate.expiryDate().toString(Qt::ISODate);
     return true;
+}
+
+void FileServer::reloadTls(const QSslConfiguration& configuration)
+{
+    m_sslConfiguration = configuration;
+
+    // Harmless before start(): HttpServer keeps the configuration and hands it to
+    // each connection as it arrives, so setting it early and setting it late are the
+    // same operation. Transfers already running keep the certificate they handshook
+    // with and are not disturbed.
+    m_server->setTlsConfiguration(configuration);
 }
 
 bool FileServer::start(quint16 port)
@@ -388,4 +369,31 @@ QString FileServer::localIP() const
     }
 
     return fallback.isEmpty() ? QStringLiteral("127.0.0.1") : fallback;
+}
+
+QString FileServer::overlayIP() const
+{
+    for (const QNetworkInterface& interface : QNetworkInterface::allInterfaces()) {
+        const auto flags = interface.flags();
+        if (!flags.testFlag(QNetworkInterface::IsUp)
+            || !flags.testFlag(QNetworkInterface::IsRunning)
+            || flags.testFlag(QNetworkInterface::IsLoopBack)) {
+            continue;
+        }
+
+        for (const QNetworkAddressEntry& entry : interface.addressEntries()) {
+            const QHostAddress address = entry.ip();
+            if (address.protocol() != QAbstractSocket::IPv4Protocol)
+                continue;
+
+            // 100.64.0.0/10. Not in localIP()'s list, which is why an overlay
+            // address could only ever surface there as the fallback — and never did,
+            // because any machine with working Wi-Fi has an RFC1918 address that
+            // wins first.
+            if (address.isInSubnet(QHostAddress(QStringLiteral("100.64.0.0")), 10))
+                return address.toString();
+        }
+    }
+
+    return {};
 }

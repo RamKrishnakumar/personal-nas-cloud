@@ -26,6 +26,9 @@
 #include <QPushButton>      // Clickable button widget
                             // Used for the Start/Stop Server toggle button.
 
+#include <QComboBox>        // Drop-down list widget
+                            // Used to choose how the library is reached from outside.
+
 // —— Our Own Module Includes —————————————————————————————————————————————————————————————————
 
 #include "core/FileServer/FileServer.h"     // HTTP file server — serves files over LAN/internet
@@ -33,6 +36,17 @@
 
 #include "core/DdnsUpdater/DdnsUpdater.h"    // DDNS auto-updater — keeps hostname pointing to current IP
                             // to No-IP so nestdrive.ddns.net always resolves
+                            // Only useful with a real public IP — see docs/REMOTE-ACCESS.md
+
+#include "core/Tls/CertRenewer.h"   // Keeps a real certificate from expiring, without a restart
+#include "core/Tls/Tailscale.h"     // Asks the local Tailscale node for its name and a certificate
+#include "core/Tls/TlsConfig.h"     // resolveTlsPath(), so this reads the file the server serves
+
+#include "core/Net/ConnectionCheck.h"   // Public address, or behind the provider's NAT?
+#include "core/Net/Upnp.h"              // Asks the router directly, and can forward a port
+#include "core/Remote/RemoteMethod.h"   // Which of the two paths to use
+
+#include <memory>
                             // MainWindow creates and owns one instance of this.
 
 namespace db { class Database; }
@@ -86,6 +100,22 @@ private slots:
      */
     void onManageAccounts();
 
+    /**
+     * @brief Shows how to reach the library from outside the house.
+     *
+     * Reports what Tailscale is doing, the address to use, and the certificate's
+     * expiry; explains the setup when there is nothing to report. Deliberately a
+     * dialog rather than the start of a settings wizard — the roadmap's v0.5 wizard
+     * does not exist, and remote access should not be the thing that invents it.
+     */
+    void onShowRemoteAccess();
+
+    /** Saves the chosen remote-access method and re-runs setup for it. */
+    void onRemoteMethodChanged(int index);
+
+    /** Asks the router to forward the server's port to this machine. */
+    void onForwardPort();
+
 private:
     /** Prompts for the administrator account when none exists yet. */
     void promptForFirstAdminIfNeeded();
@@ -97,6 +127,60 @@ private:
      * button is exactly as worth recording as the first one.
      */
     void recordAccountCreated(int userId, const QString& username);
+
+    /**
+     * @brief Works out how this machine is reachable, and prepares that path.
+     *
+     * Re-runnable: tears down whatever the last run built before starting again, so
+     * changing the method in the control bar does not need a restart.
+     *
+     * Probing Tailscale is immediate, but classifying the connection is two network
+     * round trips, so the second half finishes in applyRemoteMethod() once
+     * core::ConnectionCheck reports. Nothing here blocks the window.
+     */
+    void setUpRemoteAccess();
+
+    /**
+     * @brief Finishes setup once the connection type is known.
+     *
+     * Resolves the effective method, arranges certificate handling for it, and brings
+     * the window's labels into line.
+     */
+    void applyRemoteMethod(core::ConnectionType connection);
+
+    /**
+     * @brief Starts the DDNS updater, if publishing an address is the right thing.
+     *
+     * Called from applyRemoteMethod() rather than the constructor, because the
+     * decision needs the connection type: behind the provider's NAT the visible
+     * address belongs to the provider and is shared, so publishing it would aim this
+     * household's hostname at somebody else's connection.
+     */
+    void startDdnsIfUseful();
+
+    /** Certificate renewal through Tailscale. Only for the Tailscale method. */
+    void startTailscaleCertificates();
+
+    /**
+     * @brief Checks, but never replaces, the certificate for the public method.
+     *
+     * The distinction matters: on this path the certificate is the owner's, obtained
+     * with win-acme or similar, and renewed by that tool's own scheduled task.
+     * Overwriting it would undo their setup.
+     */
+    void checkPublicCertificate();
+
+    /**
+     * @brief The URL to reach this server from outside, or empty if there is none.
+     *
+     * Built from a name rather than an address wherever possible, because the
+     * certificate is issued for the name — the MagicDNS name for the Tailscale
+     * method, the DDNS hostname for the public one.
+     */
+    QString remoteUrl() const;
+
+    /** "https" or "http", matching how the server was actually started. */
+    QString scheme() const;
 
     // ── UI Widget Members ──────────────────────────────────────────────────────
     // Initialized to nullptr so they have a safe default value before
@@ -110,6 +194,9 @@ private:
     QLabel*           m_serverStatus = nullptr; // Shows server URL or "Server stopped" text
     QPushButton*      m_accountsBtn  = nullptr; // Opens the account dialog
     QLabel*           m_accountWarning = nullptr; // Shown while no account exists
+    QPushButton*      m_remoteBtn    = nullptr; // Opens the remote access dialog
+    QLabel*           m_certWarning  = nullptr; // Shown while the certificate is near expiry
+    QComboBox*        m_remoteMethodBox = nullptr; // Auto / Tailscale / Public link / LAN
 
     // ── Core Component Members ─────────────────────────────────────────────────
     // Both are heap-allocated with 'this' as Qt parent, so they are automatically
@@ -119,6 +206,25 @@ private:
     DdnsUpdater*  m_ddnsUpdater  = nullptr; // Owns the DDNS polling timer and API calls
     db::Database* m_database = nullptr;  // Not owned; outlives this window
     AppConfig     m_config;                // Loads settings from config.ini at startup
+
+    // ── Remote access ──────────────────────────────────────────────────────────
+    // unique_ptr rather than Qt parenting because core::Tailscale is not a QObject,
+    // and the renewer has to be destroyed before it so its last call cannot outlive
+    // what it calls into.
+    std::unique_ptr<core::Tailscale>      m_tailscale;
+    std::unique_ptr<core::CertRenewer>    m_certRenewer;
+    std::unique_ptr<core::UpnpClient>     m_upnp;
+    std::unique_ptr<core::ConnectionCheck> m_connectionCheck;
+
+    /// MagicDNS name from the last status query, empty when there is none.
+    QString m_remoteName;
+
+    /// What detection concluded, and which path is actually in use.
+    core::ConnectionType m_connection = core::ConnectionType::Unknown;
+    core::RemoteMethod   m_method     = core::RemoteMethod::LanOnly;
+
+    /// Why the effective method differs from what was configured, or empty.
+    QString m_methodNote;
 
     // ── Private Helper Method ──────────────────────────────────────────────────
 

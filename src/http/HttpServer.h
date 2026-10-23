@@ -102,7 +102,17 @@ public:
     /** The shared admission controller, or null before a profile is applied. */
     AdmissionControl* admissionControl() const { return m_admission.get(); }
 
-    /** Enables TLS for subsequent connections. Must be set before listen(). */
+    /**
+     * @brief Enables TLS, or replaces the certificate already in use.
+     *
+     * Takes effect for connections accepted after this call. Ones already
+     * established keep the certificate they completed their handshake with, so
+     * replacing an expiring certificate does not interrupt a download in progress.
+     *
+     * Safe while listening, unlike the other setters here, because the configuration
+     * is read per connection on this object's own thread rather than captured by the
+     * workers when they start. Must be called from that thread.
+     */
     void setTlsConfiguration(const QSslConfiguration& configuration);
     void clearTlsConfiguration();
     bool usesTls() const { return m_useTls; }

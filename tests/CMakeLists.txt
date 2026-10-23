@@ -36,6 +36,13 @@ endforeach()
 nestdrive_add_test(thumbnailcache LIBRARIES nestdrive_media)
 nestdrive_add_test(thumbnailscanner LIBRARIES nestdrive_media)
 
+# TLS material and the certificate lifecycle. These are the first tests this code has
+# ever had: until nestdrive_core existed, the loader was compiled only into the
+# application executable and nothing could link it.
+foreach(suite tlsconfig tailscale certrenewer upnp connectioncheck remotemethod)
+    nestdrive_add_test(${suite} LIBRARIES nestdrive_core)
+endforeach()
+
 # A stand-in for the ffmpeg CLI. Built rather than scripted because QProcess has to
 # launch it the same way it launches the real thing, and because a .bat is not
 # consistently seen as executable across the two toolchains.
@@ -51,6 +58,13 @@ set_target_properties(fake_ffmpeg PROPERTIES WIN32_EXECUTABLE FALSE)
 qt_add_executable(fake_ffprobe fixtures/fake_ffmpeg.cpp)
 target_link_libraries(fake_ffprobe PRIVATE Qt6::Core Qt6::Gui)
 set_target_properties(fake_ffprobe PROPERTIES WIN32_EXECUTABLE FALSE)
+
+# A stand-in for the tailscale CLI, for the same reasons as fake_ffmpeg above: the
+# real tool needs a daemon, a logged-in node and a round trip to Let's Encrypt, none
+# of which says the same thing twice.
+qt_add_executable(fake_tailscale fixtures/fake_tailscale.cpp)
+target_link_libraries(fake_tailscale PRIVATE Qt6::Core)
+set_target_properties(fake_tailscale PROPERTIES WIN32_EXECUTABLE FALSE)
 
 nestdrive_add_test(frameextractor LIBRARIES nestdrive_media)
 nestdrive_add_test(videotranscoder LIBRARIES nestdrive_media)
@@ -77,5 +91,12 @@ foreach(suite frameextractor videotranscoder videoserver thumbnailcache thumbnai
     target_compile_definitions(tst_${suite} PRIVATE
         FAKE_FFMPEG_PATH="$<TARGET_FILE:fake_ffmpeg>"
         FAKE_FFPROBE_PATH="$<TARGET_FILE:fake_ffprobe>"
+    )
+endforeach()
+
+foreach(suite tailscale certrenewer)
+    add_dependencies(tst_${suite} fake_tailscale)
+    target_compile_definitions(tst_${suite} PRIVATE
+        FAKE_TAILSCALE_PATH="$<TARGET_FILE:fake_tailscale>"
     )
 endforeach()

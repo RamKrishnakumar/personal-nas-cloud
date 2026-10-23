@@ -1,5 +1,7 @@
 #include "DdnsUpdater.h"
 
+#include "core/Net/ConnectionCheck.h"
+
 #include <QNetworkRequest>
 #include <QNetworkReply>
 #include <QUrlQuery>
@@ -9,8 +11,14 @@
 // External service used to discover the current WAN IP.
 // ipify.org is a free, stable, widely-used public IP detection API.
 // Returns a plain text IPv4 address e.g. "117.247.29.111"
+//
+// Shared with core::ConnectionCheck rather than declared twice. That check works by
+// comparing this answer against what the router believes its own address is, so if
+// the two ever consulted different services a disagreement between them would look
+// like carrier-grade NAT when it was only two providers' opinions.
 // ─────────────────────────────────────────────────────────────────────────────
-static const QString WAN_IP_SERVICE = "https://api.ipify.org?format=text";
+static const QString WAN_IP_SERVICE =
+    QString::fromLatin1(core::PublicAddressService);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // No-IP's official DDNS update endpoint.

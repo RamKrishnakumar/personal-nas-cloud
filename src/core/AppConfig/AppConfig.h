@@ -39,8 +39,70 @@ public:
 
       // ── TLS (Step 1) ─────────────────────────────────────────────────────
     bool     useHttps()     const;   ///< true → start in HTTPS mode
-    QString  certPath()     const;   ///< path to PEM certificate file
-    QString  keyPath()      const;   ///< path to RSA private key file
+    QString  certPath()     const;   ///< PEM certificate; leaf first, then any intermediates
+    QString  keyPath()      const;   ///< PEM private key, EC or RSA, unencrypted
+
+    // ── Remote access ────────────────────────────────────────────────────
+    /**
+     * @brief Whether to obtain and renew a certificate through Tailscale.
+     *
+     * Costs nothing when Tailscale is not installed or the node is logged out: the
+     * server then keeps whatever certPath() points at, which for a LAN-only setup is
+     * the self-signed pair from scripts/gen-cert.sh.
+     *
+     * Turn it off to manage the certificate by hand — a real public IP with
+     * Let's Encrypt, for instance. See docs/REMOTE-ACCESS.md.
+     */
+    bool     useTailscaleCert() const;
+
+    /**
+     * @brief Path to the tailscale binary, or empty to search the usual places.
+     *
+     * Empty is the normal setting, with the same contract as ffmpegPath(): beside
+     * the application first, then PATH.
+     */
+    QString  tailscalePath() const;
+
+    /**
+     * @brief How many days before expiry to renew. Default 14.
+     *
+     * Values at or below zero fall back to the default rather than being taken
+     * literally — see core::CertRenewer::shouldRenew(), where zero would otherwise
+     * mean "renew only after it has already expired".
+     */
+    int      certRenewDays() const;
+
+    /**
+     * @brief Which remote-access path to use: auto, tailscale, public or lan.
+     *
+     * Parsed by core::remoteMethodFromString(). Anything unrecognised reads as auto.
+     */
+    QString  remoteMethod() const;
+    void     setRemoteMethod(const QString& value);
+
+    /**
+     * @brief A remembered answer about this connection, used only as a fallback.
+     *
+     * Detection runs at every startup rather than trusting this, because the answer
+     * is a property of the connection and not of the machine — a laptop moved between
+     * two providers, one behind carrier-grade NAT and one not, would otherwise be told
+     * something true about the wrong network. This is consulted only when detection
+     * comes back Unknown, which happens when the router will not report its address
+     * over UPnP and the public address does not settle the question by itself.
+     *
+     * Parsed by core::connectionTypeFromString().
+     */
+    QString  connectionType() const;
+    void     setConnectionType(const QString& value);
+
+    /**
+     * @brief Whether NestDrive may ask the router to forward its port.
+     *
+     * Off by default. Creating a rule on somebody's router is a change to equipment
+     * they own, made on their behalf, and it should follow a deliberate press rather
+     * than happen because the capability was detected.
+     */
+    bool     upnpPortForward() const;
 
     // ── Media (Step 17) ──────────────────────────────────────────────────
     /**

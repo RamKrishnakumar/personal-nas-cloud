@@ -60,6 +60,20 @@ public:
      */
     bool loadTlsFiles(const QString& certificatePath, const QString& privateKeyPath);
 
+    /**
+     * @brief Swaps in a renewed certificate without interrupting anything.
+     *
+     * Safe to call while the server is listening, which is the whole point:
+     * core::CertRenewer connects its certificateRenewed signal here, so a 90-day
+     * certificate is replaced in place rather than needing the server stopped and
+     * started. Connections already established keep the certificate they handshook
+     * with; everything opened afterwards gets the new one.
+     *
+     * Must be called from the thread that owns this object — the same thread that
+     * accepts connections. See http::HttpServer::setTlsConfiguration().
+     */
+    void reloadTls(const QSslConfiguration& configuration);
+
     void setUseHttps(bool enabled) { m_useHttps = enabled; }
     bool useHttps() const { return m_useHttps; }
 
@@ -70,7 +84,34 @@ public:
     void    stop();
     bool    isRunning() const;
     quint16 port() const { return m_port; }
+
+    /**
+     * @brief The address other devices on the same network should use.
+     *
+     * Deliberately an RFC1918 address and nothing else. Picking the first
+     * non-loopback entry, as v0.5 did, lands on whichever virtual adapter happens to
+     * be enumerated first and hands out an address nothing can reach.
+     */
     QString localIP() const;
+
+    /**
+     * @brief The address inside the private overlay network, or empty.
+     *
+     * Separate from localIP() rather than folded into it, because both are true at
+     * once and a machine has both: the LAN address works for devices in the house,
+     * and this one works from anywhere. Showing only the first was the practical
+     * effect of the overlay range not appearing in localIP()'s list at all.
+     *
+     * Recognised by address range — 100.64.0.0/10, which RFC 6598 reserves for
+     * carrier-grade NAT and which Tailscale deliberately reuses. On a *local*
+     * interface that is effectively conclusive: an ISP's own CGNAT addresses live on
+     * their equipment, not on this laptop's adapters.
+     *
+     * Prefer the MagicDNS name over this when one is available. The certificate is
+     * issued for the name, so connecting by address produces exactly the warning
+     * that having a real certificate is meant to remove.
+     */
+    QString overlayIP() const;
 
     /** Live connection count across all worker threads. */
     int connectionCount() const;

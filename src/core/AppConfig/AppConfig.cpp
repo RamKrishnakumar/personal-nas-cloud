@@ -162,6 +162,51 @@ QString AppConfig::certPath()  const { return m_settings.value("Server/certPath"
 QString AppConfig::keyPath()   const { return m_settings.value("Server/keyPath",  "key.pem").toString(); }
 QString AppConfig::ffmpegPath() const { return m_settings.value("Media/ffmpegPath", "").toString().trimmed(); }
 
+// ── Remote access ─────────────────────────────────────────────────────────────
+// Defaults on. The feature is inert without Tailscale installed and logged in, so
+// defaulting it off would mean every owner who did install Tailscale still had to
+// find a setting before anything happened — and the whole point is that remote
+// access stops needing configuration.
+bool AppConfig::useTailscaleCert() const
+{
+    return m_settings.value("Remote/useTailscaleCert", true).toBool();
+}
+
+QString AppConfig::tailscalePath() const
+{
+    return m_settings.value("Remote/tailscalePath", "").toString().trimmed();
+}
+
+int AppConfig::certRenewDays() const
+{
+    return m_settings.value("Remote/certRenewDays", 14).toInt();
+}
+
+QString AppConfig::remoteMethod() const
+{
+    return m_settings.value("Remote/method", "auto").toString().trimmed();
+}
+
+void AppConfig::setRemoteMethod(const QString& value)
+{
+    m_settings.setValue("Remote/method", value);
+}
+
+QString AppConfig::connectionType() const
+{
+    return m_settings.value("Remote/connectionType", "unknown").toString().trimmed();
+}
+
+void AppConfig::setConnectionType(const QString& value)
+{
+    m_settings.setValue("Remote/connectionType", value);
+}
+
+bool AppConfig::upnpPortForward() const
+{
+    return m_settings.value("Remote/upnpPortForward", false).toBool();
+}
+
 
 
 // ── Meta ──────────────────────────────────────────────────────────────────────

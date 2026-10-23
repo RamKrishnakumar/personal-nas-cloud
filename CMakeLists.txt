@@ -148,6 +148,44 @@ target_link_libraries(nestdrive_handlers PUBLIC
     nestdrive_auth
 )
 
+# ── Application services library ─────────────────────────────────────────────
+# Configuration, TLS material and the certificate lifecycle. Separate from the
+# executable so tests can reach it: for the whole of v0.5 and v0.6 the TLS loader
+# was compiled only into MyNAS, which is the direct reason three defects in it went
+# unnoticed until a real certificate authority was involved.
+#
+# Deliberately free of Qt6::Widgets and Qt6::Sql — nothing here needs a window or a
+# database, and keeping it that way is what lets the suites run without the Gui and
+# Sql driver plugins.
+add_library(nestdrive_core STATIC
+    src/core/AppConfig/AppConfig.h
+    src/core/AppConfig/AppConfig.cpp
+
+    src/core/Tls/TlsConfig.h
+    src/core/Tls/TlsConfig.cpp
+    src/core/Tls/Tailscale.h
+    src/core/Tls/Tailscale.cpp
+    src/core/Tls/CertRenewer.h
+    src/core/Tls/CertRenewer.cpp
+
+    # Working out how this machine is reachable, and asking the router to help.
+    src/core/Net/Upnp.h
+    src/core/Net/Upnp.cpp
+    src/core/Net/ConnectionCheck.h
+    src/core/Net/ConnectionCheck.cpp
+    src/core/Remote/RemoteMethod.h
+    src/core/Remote/RemoteMethod.cpp
+)
+
+# CertRenewer, UpnpClient and ConnectionCheck are QObjects with signals.
+set_target_properties(nestdrive_core PROPERTIES AUTOMOC ON)
+
+target_link_libraries(nestdrive_core PUBLIC Qt6::Core Qt6::Network)
+
+target_include_directories(nestdrive_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
 # Web interface, embedded so the binary needs no companion files. Plain ES modules
 # with no bundler: a build step would add a Node toolchain for minification that
 # gzip already largely covers, and type checking we are not using.
@@ -180,9 +218,6 @@ qt_add_executable(MyNAS
 
     src/core/DdnsUpdater/DdnsUpdater.h
     src/core/DdnsUpdater/DdnsUpdater.cpp
-
-    src/core/AppConfig/AppConfig.h
-    src/core/AppConfig/AppConfig.cpp
 )
 
 # ── Include directories ───────────────────────────────────────────────────────
@@ -193,15 +228,19 @@ target_include_directories(MyNAS PRIVATE
 )
 
 # ── Link libraries ────────────────────────────────────────────────────────────
-# Qt6::Network includes QSslSocket / OpenSSL support.
-# On Windows, deploy OpenSSL DLLs (libssl-3-x64.dll, libcrypto-3-x64.dll)
-# next to the exe — Qt's windeployqt does this automatically.
+# Qt6::Network brings QSslSocket, but which TLS library backs it is decided at
+# runtime, not here: Qt uses OpenSSL when libssl/libcrypto can be loaded and falls
+# back to Schannel on Windows otherwise. windeployqt does NOT ship the OpenSSL DLLs
+# — that is a separate install — so a packaged build on Windows normally runs on
+# Schannel. core::describeTlsBackend() logs which one it actually got, because this
+# is a deployment property and guessing at it wastes time during a handshake bug.
 target_link_libraries(MyNAS PRIVATE
     nestdrive_handlers
     nestdrive_media
     nestdrive_auth
     nestdrive_http
     nestdrive_db
+    nestdrive_core
     Qt6::Core
     Qt6::Widgets
     Qt6::Network

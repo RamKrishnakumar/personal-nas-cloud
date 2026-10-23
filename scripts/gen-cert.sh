@@ -5,7 +5,13 @@
 # Scope: LAN access and local development ONLY. Browsers will show a warning
 # for a self-signed certificate, which is expected and unavoidable. For remote
 # access from outside the LAN, use a real certificate (Let's Encrypt via
-# DNS-01, or `tailscale cert`) rather than this one.
+# DNS-01, or `tailscale cert`) rather than this one — NestDrive now obtains and
+# renews one itself when Tailscale is present. See docs/REMOTE-ACCESS.md.
+#
+# This writes RSA because that is the lower-risk default for the LAN case and
+# because every existing installation already has one. The server accepts EC
+# keys too, and full certificate chains, so nothing here constrains what a real
+# certificate authority may issue — see core::loadTls().
 #
 # Usage:
 #   ./scripts/gen-cert.sh                          # localhost + detected LAN IP

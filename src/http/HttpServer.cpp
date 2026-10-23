@@ -90,7 +90,13 @@ int HttpServer::workerCount() const
 
 void HttpServer::setTlsConfiguration(const QSslConfiguration& configuration)
 {
-    Q_ASSERT(!isListening());
+    // No longer asserts that the server is idle. Nothing here needs it to be: this
+    // object runs on the thread that accepts connections, incomingConnection() reads
+    // the member on that same thread and copies it into the queued call to the
+    // worker, and a worker never looks at it again afterwards. So a replacement
+    // cannot race an accept, and a connection in progress keeps the configuration it
+    // was given. Certificate renewal depends on exactly that — see
+    // core::CertRenewer.
     m_tlsConfiguration = configuration;
     m_useTls = true;
 }
