@@ -129,3 +129,10 @@ config.ini
 
 # Qt MOC / UIC generated files (auto-regenerated on build)
 *_autogen/
+# TLS material - never commit private keys or certificates
+*.pem
+*.key
+*.crt
+*.pfx
+*.p12
+certs/

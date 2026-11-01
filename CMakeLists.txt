@@ -1,76 +1,316 @@
 cmake_minimum_required(VERSION 3.16)
-project(MyNAS VERSION 0.4 LANGUAGES CXX)
+project(MyNAS VERSION 0.5 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# ── Windows header hygiene ───────────────────────────────────────────────────
+# windows.h defines min and max as macros, which then collide with std::min,
+# std::max and std::numeric_limits<T>::max(). The failure is confusing because
+# MSVC reports a syntax error on the line using the standard facility rather than
+# on the include that caused it. Setting this globally means a file that pulls in
+# a Windows header indirectly cannot reintroduce the problem.
+#
+# WIN32_LEAN_AND_MEAN additionally keeps rarely-needed subsystem headers out,
+# which shortens compile times.
+if(WIN32)
+    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network)
+# ── Qt modules ───────────────────────────────────────────────────────────────
+# NetworkAuth is NOT needed here.
+# Qt6::Network covers QTcpServer, QTcpSocket, QSslSocket, QSslConfiguration.
+# Qt links OpenSSL automatically when Network is requested on Windows/Linux.
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network Sql)
 
-qt_add_executable(MyNAS
-    src/main.cpp
-    src/ui/MainWindow.h
-    src/ui/MainWindow.cpp
-    src/ui/TrayManager.h
-    src/ui/TrayManager.cpp
-    src/core/FileServer/FileServer.h
-    src/core/FileServer/FileServer.cpp
-    src/core/DdnsUpdater/DdnsUpdater.h
-    src/core/DdnsUpdater/DdnsUpdater.cpp
-    src/core/AppConfig/AppConfig.h
-    src/core/AppConfig/AppConfig.cpp
+# ── Pure logic library ───────────────────────────────────────────────────────
+# Parsing, path resolution and (later) permission resolution live here. These
+# have no socket, filesystem-state or database dependency, which is what makes
+# them testable without standing up a server. Both MyNAS and the test targets
+# link this, so there is exactly one copy of the logic under test.
+add_library(nestdrive_http STATIC
+    src/http/RangeParser.h
+    src/http/RangeParser.cpp
+    src/http/PathResolver.h
+    src/http/PathResolver.cpp
+    src/http/RequestParser.h
+    src/http/RequestParser.cpp
+    src/http/MimeType.h
+    src/http/MimeType.cpp
+    src/http/Compression.h
+    src/http/Compression.cpp
+    src/http/HardwareTier.h
+    src/http/HardwareTier.cpp
+    src/http/AdmissionControl.h
+    src/http/AdmissionControl.cpp
+    src/http/Cookies.h
+    src/http/Cookies.cpp
+
+    # Transport: threading, sockets, TLS, framing and streaming.
+    src/http/Router.h
+    src/http/Connection.h
+    src/http/Connection.cpp
+    src/http/Worker.h
+    src/http/Worker.cpp
+    src/http/HttpServer.h
+    src/http/HttpServer.cpp
+
 )
 
+# AUTOMOC is needed here now: Connection, Worker and HttpServer are QObjects.
+set_target_properties(nestdrive_http PROPERTIES AUTOMOC ON)
+
+target_link_libraries(nestdrive_http PUBLIC Qt6::Core Qt6::Network)
+
+target_include_directories(nestdrive_http PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+# ── Persistence library ──────────────────────────────────────────────────────
+# Separate from nestdrive_http so the parsing tests do not drag in Qt6::Sql and
+# its driver plugin.
+add_library(nestdrive_db STATIC
+    src/db/Database.h
+    src/db/Database.cpp
+    src/db/Migrations.h
+    src/db/Migrations.cpp
+    src/db/AuditLog.h
+    src/db/AuditLog.cpp
+)
+
+target_link_libraries(nestdrive_db PUBLIC Qt6::Core Qt6::Sql)
+
+target_include_directories(nestdrive_db PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+# ── Authentication library ───────────────────────────────────────────────────
+# Separate from the HTTP layer because none of it knows about sockets: password
+# hashing, session bookkeeping and rate limiting are all testable with a temporary
+# database and no server at all.
+#
+# Qt6::Network is here for QPasswordDigestor, which is where Qt keeps PBKDF2. It is
+# an odd home for it, but using Qt's implementation beats hand-rolling the one kind
+# of code that fails silently when it is wrong.
+add_library(nestdrive_auth STATIC
+    src/auth/PasswordHash.h
+    src/auth/PasswordHash.cpp
+    src/auth/LoginRateLimiter.h
+    src/auth/LoginRateLimiter.cpp
+    src/auth/SessionStore.h
+    src/auth/SessionStore.cpp
+    src/auth/UserStore.h
+    src/auth/UserStore.cpp
+    src/auth/Permissions.h
+    src/auth/Permissions.cpp
+    src/auth/PermissionStore.h
+    src/auth/PermissionStore.cpp
+)
+
+target_link_libraries(nestdrive_auth PUBLIC nestdrive_db Qt6::Core Qt6::Network)
+
+# ── Media library ────────────────────────────────────────────────────────────
+# Image decoding, so Qt6::Gui lives here rather than in the transport layer.
+add_library(nestdrive_media STATIC
+    src/media/ThumbnailCache.h
+    src/media/ThumbnailCache.cpp
+    src/media/ThumbnailScanner.h
+    src/media/ThumbnailScanner.cpp
+    src/media/FrameExtractor.h
+    src/media/FrameExtractor.cpp
+    src/media/VideoTranscoder.h
+    src/media/VideoTranscoder.cpp
+    src/media/VideoStore.h
+    src/media/VideoStore.cpp
+)
+
+set_target_properties(nestdrive_media PROPERTIES AUTOMOC ON)
+target_link_libraries(nestdrive_media PUBLIC nestdrive_db Qt6::Core Qt6::Gui)
+
+# ── Request handlers ─────────────────────────────────────────────────────────
+# Kept separate so the parser and admission tests link only nestdrive_http and do
+# not pull in Qt6::Gui, Qt6::Sql or their plugins.
+add_library(nestdrive_handlers STATIC
+    src/handlers/FileRouter.h
+    src/handlers/FileRouter.cpp
+    src/handlers/AuthHandler.h
+    src/handlers/AuthHandler.cpp
+    src/handlers/AuthGate.h
+    src/handlers/AuthGate.cpp
+)
+
+target_link_libraries(nestdrive_handlers PUBLIC
+    nestdrive_http
+    nestdrive_media
+    nestdrive_auth
+)
+
+# ── Application services library ─────────────────────────────────────────────
+# Configuration, TLS material and the certificate lifecycle. Separate from the
+# executable so tests can reach it: for the whole of v0.5 and v0.6 the TLS loader
+# was compiled only into MyNAS, which is the direct reason three defects in it went
+# unnoticed until a real certificate authority was involved.
+#
+# Deliberately free of Qt6::Widgets and Qt6::Sql — nothing here needs a window or a
+# database, and keeping it that way is what lets the suites run without the Gui and
+# Sql driver plugins.
+add_library(nestdrive_core STATIC
+    src/core/AppConfig/AppConfig.h
+    src/core/AppConfig/AppConfig.cpp
+
+    src/core/Tls/TlsConfig.h
+    src/core/Tls/TlsConfig.cpp
+    src/core/Tls/Tailscale.h
+    src/core/Tls/Tailscale.cpp
+    src/core/Tls/CertRenewer.h
+    src/core/Tls/CertRenewer.cpp
+
+    # Working out how this machine is reachable, and asking the router to help.
+    src/core/Net/Upnp.h
+    src/core/Net/Upnp.cpp
+    src/core/Net/ConnectionCheck.h
+    src/core/Net/ConnectionCheck.cpp
+    src/core/Remote/RemoteMethod.h
+    src/core/Remote/RemoteMethod.cpp
+)
+
+# CertRenewer, UpnpClient and ConnectionCheck are QObjects with signals.
+set_target_properties(nestdrive_core PROPERTIES AUTOMOC ON)
+
+target_link_libraries(nestdrive_core PUBLIC Qt6::Core Qt6::Network)
+
+target_include_directories(nestdrive_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+# Web interface, embedded so the binary needs no companion files. Plain ES modules
+# with no bundler: a build step would add a Node toolchain for minification that
+# gzip already largely covers, and type checking we are not using.
+qt_add_resources(nestdrive_handlers "nestdrive_web"
+    PREFIX "/web"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/web"
+    FILES
+        web/index.html
+        web/app.js
+        web/app.css
+        web/login.html
+)
+
+# ── Source files ─────────────────────────────────────────────────────────────
+qt_add_executable(MyNAS
+    src/main.cpp
+
+    src/app/Paths.h
+    src/app/Paths.cpp
+
+    src/ui/MainWindow.h
+    src/ui/MainWindow.cpp
+    src/ui/AccountDialog.h
+    src/ui/AccountDialog.cpp
+    src/ui/TrayManager.h
+    src/ui/TrayManager.cpp
+
+    src/core/FileServer/FileServer.h
+    src/core/FileServer/FileServer.cpp
+
+    src/core/DdnsUpdater/DdnsUpdater.h
+    src/core/DdnsUpdater/DdnsUpdater.cpp
+)
+
+# ── Include directories ───────────────────────────────────────────────────────
 target_include_directories(MyNAS PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ui
     ${CMAKE_CURRENT_SOURCE_DIR}/src/core
 )
 
+# ── Link libraries ────────────────────────────────────────────────────────────
+# Qt6::Network brings QSslSocket, but which TLS library backs it is decided at
+# runtime, not here: Qt uses OpenSSL when libssl/libcrypto can be loaded and falls
+# back to Schannel on Windows otherwise. windeployqt does NOT ship the OpenSSL DLLs
+# — that is a separate install — so a packaged build on Windows normally runs on
+# Schannel. core::describeTlsBackend() logs which one it actually got, because this
+# is a deployment property and guessing at it wastes time during a handshake bug.
 target_link_libraries(MyNAS PRIVATE
+    nestdrive_handlers
+    nestdrive_media
+    nestdrive_auth
+    nestdrive_http
+    nestdrive_db
+    nestdrive_core
     Qt6::Core
     Qt6::Widgets
     Qt6::Network
+    Qt6::Sql
 )
 
+# ── Measurement harness ──────────────────────────────────────────────────────
+# Step 18's deliverable. Console target, built with the normal build so it cannot
+# drift from the code it measures, and off by default so it costs a packaged build
+# nothing.
+option(NESTDRIVE_BUILD_BENCH "Build the measurement harness" ON)
+
+if(NESTDRIVE_BUILD_BENCH)
+    qt_add_executable(nestdrive_bench tools/bench/main.cpp)
+
+    target_link_libraries(nestdrive_bench PRIVATE
+        nestdrive_handlers
+        nestdrive_media
+        nestdrive_auth
+        nestdrive_http
+        nestdrive_db
+        Qt6::Core
+        Qt6::Gui          # QImage, for generating the synthetic photo set.
+        Qt6::Network
+        Qt6::Sql
+    )
+
+    # Resident set size comes from GetProcessMemoryInfo, which lives here.
+    if(WIN32)
+        target_link_libraries(nestdrive_bench PRIVATE psapi)
+    endif()
+
+    set_target_properties(nestdrive_bench PROPERTIES WIN32_EXECUTABLE FALSE)
+endif()
+
+# ── Tests ─────────────────────────────────────────────────────────────────────
+# On by default for a normal source build, off when MyNAS is consumed as a
+# subproject. Run with: ctest --test-dir <build-dir> --output-on-failure
+option(NESTDRIVE_BUILD_TESTS "Build the NestDrive unit tests" ON)
+
+if(NESTDRIVE_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
+# ── Windows: hide console window in release builds ────────────────────────────
 set_target_properties(MyNAS PROPERTIES
     WIN32_EXECUTABLE TRUE
 )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Auto-copy config.ini to build folder as part of the MyNAS build.
+# ── Copy cert + key next to the exe during build ──────────────────────────────
+# AppConfig resolves relative certPath / keyPath against the executable's own
+# directory, so the PEM files have to live beside MyNAS.exe rather than in the
+# source tree.
 #
-# CMAKE_CURRENT_SOURCE_DIR = project root (where CMakeLists.txt lives)
-# $<TARGET_FILE_DIR:MyNAS>  = the folder containing the compiled MyNAS.exe
-#
-# This means:
-#   - config.ini stays safely at project root (backed up, gitignored)
-#   - A fresh copy lands next to MyNAS.exe on every build
-#   - The copy runs as a POST_BUILD step for the target, not as a separate
-#     standalone build action.
-# ─────────────────────────────────────────────────────────────────────────────
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/config.ini")
-    add_custom_command(
-        TARGET MyNAS POST_BUILD
+# Both files are gitignored and are NOT present in a fresh clone — generate them
+# with `sh scripts/gen-cert.sh`. The EXISTS check keeps a first build working
+# before that has been done; without it, copy_if_different fails on the missing
+# source and takes the whole build down. Re-run CMake configure after generating.
+if(EXISTS "${CMAKE_SOURCE_DIR}/cert.pem" AND EXISTS "${CMAKE_SOURCE_DIR}/key.pem")
+    add_custom_command(TARGET MyNAS POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/config.ini"
-            "$<TARGET_FILE_DIR:MyNAS>/config.ini"
-        COMMENT "Copying config.ini to build output folder..."
+            "${CMAKE_SOURCE_DIR}/cert.pem"
+            "${CMAKE_SOURCE_DIR}/key.pem"
+            "$<TARGET_FILE_DIR:MyNAS>"
+        COMMENT "Copying TLS certificate and key next to executable"
     )
-endif()
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Also copy config.ini.example so new contributors can see the template
-# next to the exe and know exactly what to fill in.
-# ─────────────────────────────────────────────────────────────────────────────
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/config.ini.example")
-    add_custom_command(
-        TARGET MyNAS POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_CURRENT_SOURCE_DIR}/config.ini.example"
-            "$<TARGET_FILE_DIR:MyNAS>/config.ini.example"
-        COMMENT "Copying config.ini.example to build output folder..."
-    )
+else()
+    message(STATUS
+        "MyNAS: cert.pem / key.pem not found in the source root. "
+        "HTTPS will be unavailable until you run 'sh scripts/gen-cert.sh' "
+        "and re-run CMake configure. Plain HTTP on the LAN is unaffected.")
 endif()

@@ -1,16 +1,149 @@
-[DDNS]
-; Your No-IP account username (email or login name)
-username=YOUR_NOIP_USERNAME
-
-; Your No-IP account password
-password=YOUR_NOIP_PASSWORD
-
-; Your No-IP hostname (e.g. nestdrive.ddns.org)
-hostname=YOUR_HOSTNAME.ddns.net
+; NestDrive configuration
+;
+; Copy this file to config.ini and fill in your own values:
+;     cp config.ini.example config.ini
+;
+; config.ini is gitignored — it holds credentials and must never be committed.
+;
+; The application looks for config.ini next to the executable first (the build
+; folder during development), then in the current working directory. If neither
+; exists, it writes one with these defaults on first launch.
+;
+; Key names must match exactly. Comments are lost if the application rewrites
+; the file, which it only does when config.ini is missing entirely.
 
 [Server]
-; Port the file server listens on
+
+; Port the file server listens on.
 port=9090
 
-; Root directory to serve files from
+; Root directory exposed to browsers. Use forward slashes on every platform.
+; Windows: E:/    Linux: /mnt/storage    macOS: /Volumes/Storage
 nasRoot=E:/
+
+; Set to true to serve HTTPS instead of plain HTTP.
+; Requires certPath and keyPath below to point at a valid PEM certificate and
+; private key. Generate a self-signed pair for LAN use with:
+;     sh scripts/gen-cert.sh
+useHttps=false
+
+; Certificate and private key paths. A relative path resolves against the folder
+; containing the executable, not the current working directory.
+;
+; The certificate file may hold a chain: the server's own certificate first, then
+; any intermediates. A real certificate authority always sends one, and leaving
+; the intermediates out makes the server untrusted on Safari and most Android
+; apps even though it looks fine in desktop Chrome.
+;
+; The key may be EC or RSA, in SEC1 or PKCS#8 form, and must not have a
+; passphrase — nothing can prompt for one at startup.
+;
+; These are also where Tailscale writes to when [Remote] below is enabled, in
+; which case they are managed for you and should not be edited.
+certPath=cert.pem
+keyPath=key.pem
+
+[Media]
+
+; Path to an ffmpeg binary, used for video poster frames and HEIC photo
+; thumbnails. Without it those files show a placeholder icon; everything else
+; works exactly the same.
+;
+; Leave blank for the normal behaviour, which is to look next to the executable
+; first and then on PATH. Set it only to point at a specific build — a path that
+; does not exist is reported once at startup and then ignored.
+;
+; To enable it, either put ffmpeg(.exe) beside the executable or install it:
+;     Windows:  winget install Gyan.FFmpeg
+;     macOS:    brew install ffmpeg
+;     Debian:   sudo apt install ffmpeg
+ffmpegPath=
+
+[Remote]
+
+; How the library is reached from outside this network. There are two ways, and
+; they suit different internet connections:
+;
+;   tailscale  Works on any connection, including behind the provider's NAT, and
+;              needs no router configuration. Every device you view from has to
+;              have Tailscale installed and signed into the same account.
+;
+;   public     A forwarded port and your DDNS hostname: an ordinary link anyone
+;              can open with nothing installed. Needs a connection whose router
+;              actually holds the address the internet sees.
+;
+;   auto       Measure the connection and pick. Prefers "public" where it works,
+;              since that is the one that needs nothing installed. This is the
+;              right setting for almost everybody.
+;
+;   lan        Do not offer remote access at all.
+;
+; It has to be one or the other, not both at once: the two need certificates for
+; different names, and one listener can only present one certificate.
+method=auto
+
+; A remembered answer about this connection, used ONLY when detection cannot
+; reach a conclusion — which happens when the router will not report its address
+; over UPnP and the public address does not settle the question by itself.
+;
+; Detection runs at every startup and is trusted ahead of this, because the
+; answer belongs to the connection rather than to the machine: a laptop moved
+; between two providers would otherwise be told something true about the other
+; network. Values: unknown, public, carrierNat.
+;
+; To settle it by hand, compare the WAN IP on your router's admin page against
+; whatismyip.com. Same number means "public"; different means "carrierNat", and
+; no router setting can change that. See docs/REMOTE-ACCESS.md.
+connectionType=unknown
+
+; Whether NestDrive may ask the router to forward its port over UPnP. Off by
+; default: adding a rule to equipment you own should follow a deliberate press,
+; which is the button in the Remote access dialog, rather than happen because
+; the capability was detected.
+upnpPortForward=false
+
+; When true, and Tailscale is installed and signed in, NestDrive obtains a
+; browser-trusted certificate for this machine's MagicDNS name and renews it
+; before it expires. certPath and keyPath above are then written for you.
+;
+; Only applies to the tailscale method. On the public method the certificate is
+; yours — obtained with win-acme or similar, and renewed by that tool's own
+; scheduled task, which keeps working while NestDrive is closed. NestDrive only
+; reads it and warns when it is wrong or expiring.
+;
+; Costs nothing when Tailscale is absent or signed out: the server keeps serving
+; the LAN with whatever certificate is already there.
+useTailscaleCert=true
+
+; Path to the tailscale binary. Leave blank for the normal behaviour, which is to
+; look beside the executable and then on PATH.
+tailscalePath=
+
+; How many days before expiry to renew, or to start warning about a certificate
+; NestDrive does not manage. Certificates last 90 days; 14 leaves room for a
+; machine that is switched off for a fortnight. Zero or negative is ignored
+; rather than obeyed — taken literally it would mean "renew only once it has
+; already expired".
+certRenewDays=14
+
+[DDNS]
+
+; No-IP credentials, used to keep your hostname pointing at your current WAN IP.
+;
+; Only useful if your connection has a real public IP. Behind the provider's NAT
+; this keeps a hostname pointing at an address that still cannot be reached — see
+; the note under [Remote] above.
+;
+; Leave all three blank to disable DDNS entirely — the server still works on the
+; LAN. Do not leave placeholder text here: the updater would then send failing
+; authentication requests to No-IP every five minutes, and repeated failures can
+; get an account blocked.
+
+; No-IP account username (email or login name)
+username=
+
+; No-IP account password
+password=
+
+; No-IP hostname, for example nestdrive.ddns.net
+hostname=

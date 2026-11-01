@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0a0a14">
+<title>NestDrive</title>
+<link rel="stylesheet" href="/_static/app.css">
+</head>
+<body>
+
+<header>
+  <h1>📁 NestDrive</h1>
+  <span id="crumbs"></span>
+  <span id="count"></span>
+  <a class="back" id="back" href="#" hidden>← Back</a>
+  <span id="whoami" class="whoami" hidden></span>
+  <a class="back" id="signout" href="#" hidden>Sign out</a>
+</header>
+
+<!-- The scroll container. Only the rows in view exist as elements; `sizer` holds
+     the full scroll height so the scrollbar still reflects the whole folder. -->
+<main id="scroller">
+  <div id="sizer"></div>
+  <div id="grid" class="grid"></div>
+</main>
+
+<div id="status" class="status" hidden></div>
+
+<div id="overlay" hidden>
+  <div id="ov-title"></div>
+  <img id="ov-img" alt="preview" hidden>
+  <video id="ov-vid" controls preload="none" hidden></video>
+  <div id="ov-msg" class="ov-msg" hidden></div>
+  <div id="ov-bar">
+    <button class="ov-btn" id="ov-prev" title="Previous">&#8592;</button>
+    <span id="ov-counter"></span>
+    <button class="ov-btn" id="ov-next" title="Next">&#8594;</button>
+    <a class="ov-btn" id="ov-dl" download>&#8595; Download</a>
+    <button class="ov-btn" id="ov-close" title="Close">&#10005;</button>
+  </div>
+</div>
+
+<script type="module" src="/_static/app.js"></script>
+</body>
+</html>
