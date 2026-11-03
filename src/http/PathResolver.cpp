@@ -5,6 +5,8 @@
 #include <QStringList>
 #include <QUrl>
 
+#include <algorithm>
+
 namespace {
 
 /**
@@ -236,6 +238,54 @@ std::optional<QString> resolveSafe(const QString& nasRoot,
         return std::nullopt;
 
     return canonical;
+}
+
+QString stripRoot(const QString& configuredRoot,
+                  const QString& canonicalRoot,
+                  const QString& absolutePath)
+{
+    // Longest first. One root can be a prefix of the other — a configured `/data`
+    // whose canonical form is `/data/volumes/disk1` is an ordinary mount layout —
+    // and stripping the shorter one there would leave `/volumes/disk1/...` in the
+    // path, which is neither root-relative nor an absolute path, and would quietly
+    // become its own permission prefix.
+    //
+    // Both are cleaned but neither is made absolute. Resolving a relative root here
+    // would reach for the filesystem, which this function promises not to do, and on
+    // Windows would silently prepend the current drive — turning a root of `/srv/nas`
+    // into `C:/srv/nas` and matching nothing. Callers pass absolute roots.
+    QStringList roots;
+    if (!canonicalRoot.isEmpty())
+        roots.append(QDir::cleanPath(canonicalRoot));
+    if (!configuredRoot.isEmpty())
+        roots.append(QDir::cleanPath(configuredRoot));
+
+    std::sort(roots.begin(), roots.end(),
+              [](const QString& a, const QString& b) { return a.size() > b.size(); });
+
+    for (const QString& root : roots) {
+        if (!isWithin(root, absolutePath))
+            continue;
+
+        QString remainder = absolutePath.mid(root.size());
+
+        // isWithin() accepts the root itself, where the remainder is empty and the
+        // library root is what was asked for.
+        if (remainder.isEmpty())
+            return QStringLiteral("/");
+
+        // A root written with a trailing separator — `E:/` is the common one — has
+        // already consumed the slash that should start the remainder.
+        if (!remainder.startsWith(QLatin1Char('/')))
+            remainder.prepend(QLatin1Char('/'));
+
+        return remainder;
+    }
+
+    // Neither root matched. Returned unchanged rather than guessed at: the callers
+    // normalise this into a permission path, and inventing a shorter one here would
+    // mean inventing which folder's rules apply.
+    return absolutePath;
 }
 
 } // namespace http

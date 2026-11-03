@@ -141,6 +141,10 @@ private:
     void sendApplicationShell(http::Connection& connection);
 
     QString                m_nasRoot;
+
+    /// The same directory with links resolved. Empty when the root does not exist.
+    QString                m_nasRootCanonical;
+
     media::ThumbnailCache* m_thumbnails     = nullptr;
     media::VideoStore*     m_videos         = nullptr;
     AuthHandler*           m_authentication = nullptr;

@@ -42,6 +42,18 @@ private slots:
     void linkInsideRootIsAllowed();
     void missingRootIsRefused();
 
+    // http::stripRoot(). Pure, so these run identically everywhere — which is the
+    // point: the bug they cover only shows up on a machine whose library root is
+    // reached through a symlink, and asserting against literal strings means a
+    // Windows machine can still prove the behaviour.
+    void stripsTheConfiguredRoot();
+    void stripsTheCanonicalRootWhenTheyDiffer();
+    void stripsTheRootItselfToASlash();
+    void prefersTheLongerRootWhenOneContainsTheOther();
+    void returnsThePathUnchangedWhenNeitherRootMatches();
+    void toleratesAnEmptyCanonicalRoot();
+    void doesNotStripASiblingDirectory();
+
 private:
     QTemporaryDir m_tmp;
     QString       m_root;      ///< <tmp>/nasroot  — the served directory
@@ -312,6 +324,95 @@ void TestPathResolver::missingRootIsRefused()
     const auto resolved = resolveSafe(m_tmp.path() + QStringLiteral("/does-not-exist"),
                                       QStringLiteral("/anything"));
     QVERIFY(!resolved.has_value());
+}
+
+// ── http::stripRoot() ───────────────────────────────────────────────────────────
+// The macOS continuous-integration run is what produced these. Three auditserver
+// assertions failed with the whole absolute path where a library-relative one was
+// expected, because `/var` on macOS is a symlink to `/private/var`, so the canonical
+// path resolveSafe() returns never starts with the configured root.
+//
+// The paths below are the real ones from that run, shortened only in the random part
+// of the temporary directory name.
+
+void TestPathResolver::stripsTheConfiguredRoot()
+{
+    QCOMPARE(http::stripRoot(QStringLiteral("/srv/nas"),
+                             QStringLiteral("/srv/nas"),
+                             QStringLiteral("/srv/nas/Shared/open.txt")),
+             QStringLiteral("/Shared/open.txt"));
+}
+
+void TestPathResolver::stripsTheCanonicalRootWhenTheyDiffer()
+{
+    // The reported failure, exactly. Expected "/Private/secret.txt"; what the audit
+    // log and the permission check actually saw was the full path.
+    const QString configured = QStringLiteral("/var/folders/n6/hn37q6pj/T/tst/nas");
+    const QString canonical =
+        QStringLiteral("/private/var/folders/n6/hn37q6pj/T/tst/nas");
+
+    QCOMPARE(http::stripRoot(configured, canonical,
+                             canonical + QStringLiteral("/Private/secret.txt")),
+             QStringLiteral("/Private/secret.txt"));
+
+    // And the other direction still works, because resolveSafe() returns a path
+    // built from the configured root when the target does not exist.
+    QCOMPARE(http::stripRoot(configured, canonical,
+                             configured + QStringLiteral("/Private/secret.txt")),
+             QStringLiteral("/Private/secret.txt"));
+}
+
+void TestPathResolver::stripsTheRootItselfToASlash()
+{
+    // Listing the top of the library. An empty string here would normalise to "/"
+    // anyway, but returning it explicitly keeps the function's contract readable.
+    QCOMPARE(http::stripRoot(QStringLiteral("/srv/nas"),
+                             QStringLiteral("/srv/nas"),
+                             QStringLiteral("/srv/nas")),
+             QStringLiteral("/"));
+}
+
+void TestPathResolver::prefersTheLongerRootWhenOneContainsTheOther()
+{
+    // An ordinary mount layout: the configured root is a link into a volume beneath
+    // it. Stripping the shorter root would leave "/volumes/disk1/Shared", which is
+    // neither relative nor absolute — and would go on to act as its own permission
+    // prefix, so a rule for "/Shared" would stop matching.
+    QCOMPARE(http::stripRoot(QStringLiteral("/data"),
+                             QStringLiteral("/data/volumes/disk1"),
+                             QStringLiteral("/data/volumes/disk1/Shared")),
+             QStringLiteral("/Shared"));
+}
+
+void TestPathResolver::returnsThePathUnchangedWhenNeitherRootMatches()
+{
+    // Should be unreachable, since resolveSafe() has already proved containment.
+    // Returning the input rather than a guess means a caller that somehow gets here
+    // matches no permission rule and is denied, instead of being handed a shortened
+    // path that matches the wrong folder's rules.
+    QCOMPARE(http::stripRoot(QStringLiteral("/srv/nas"),
+                             QStringLiteral("/srv/nas"),
+                             QStringLiteral("/etc/passwd")),
+             QStringLiteral("/etc/passwd"));
+}
+
+void TestPathResolver::toleratesAnEmptyCanonicalRoot()
+{
+    // canonicalFilePath() returns nothing for a root that does not exist — a
+    // disconnected drive. The configured root still has to work.
+    QCOMPARE(http::stripRoot(QStringLiteral("/srv/nas"), QString(),
+                             QStringLiteral("/srv/nas/Shared")),
+             QStringLiteral("/Shared"));
+}
+
+void TestPathResolver::doesNotStripASiblingDirectory()
+{
+    // The same trap isWithin() exists for: a root of /srv/nas must not match
+    // /srv/nasbackup. Stripping by length alone would turn it into "backup/x".
+    QCOMPARE(http::stripRoot(QStringLiteral("/srv/nas"),
+                             QStringLiteral("/srv/nas"),
+                             QStringLiteral("/srv/nasbackup/x")),
+             QStringLiteral("/srv/nasbackup/x"));
 }
 
 QTEST_APPLESS_MAIN(TestPathResolver)
