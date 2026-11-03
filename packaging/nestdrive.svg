@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  NestDrive application icon.
+
+  Scalable rather than a set of PNGs because linuxdeploy accepts SVG directly and a
+  single file cannot go out of sync with itself at one size and not another. A drive
+  platter with a signal arc over it: storage that is also reachable.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <defs>
+    <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3b82f6"/>
+      <stop offset="1" stop-color="#1d4ed8"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="16" y="16" width="224" height="224" rx="48" fill="url(#shell)"/>
+
+  <!-- The platter. -->
+  <circle cx="128" cy="150" r="54" fill="none" stroke="#ffffff" stroke-width="14"/>
+  <circle cx="128" cy="150" r="11" fill="#ffffff"/>
+
+  <!-- Reachable from away: two arcs rising out of the drive. -->
+  <path d="M 128 74 A 54 54 0 0 1 182 20" fill="none" stroke="#ffffff"
+        stroke-width="13" stroke-linecap="round" opacity="0.95"/>
+  <path d="M 128 74 A 86 86 0 0 1 214 -12" fill="none" stroke="#ffffff"
+        stroke-width="13" stroke-linecap="round" opacity="0.55"/>
+</svg>

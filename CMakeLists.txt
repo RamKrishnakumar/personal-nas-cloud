@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.16)
-project(MyNAS VERSION 0.5 LANGUAGES CXX)
+
+# The version lives here and nowhere else. The release workflow greps this line to
+# name its packages, so a release is cut by editing this number — not by typing a
+# version into a web form that can disagree with the binary it ships.
+project(MyNAS VERSION 0.6.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -314,3 +318,115 @@ else()
         "HTTPS will be unavailable until you run 'sh scripts/gen-cert.sh' "
         "and re-run CMake configure. Plain HTTP on the LAN is unaffected.")
 endif()
+
+# ── Installing and packaging ─────────────────────────────────────────────────
+# Everything below here exists so that `cmake --install` produces a tree a user
+# could actually run, which is the input every packaging format needs. Until this
+# section existed there were no install rules at all, so there was nothing to
+# package on any platform.
+#
+# Deliberately NOT installed: cert.pem and key.pem. They are the self-signed pair
+# scripts/gen-cert.sh makes for LAN development, and shipping one private key to
+# every downloader would mean every install shared the same key — which is worse
+# than having no certificate, because it looks like encryption and is not. A fresh
+# install therefore serves plain HTTP on the LAN until the owner sets up one of the
+# paths in docs/REMOTE-ACCESS.md, which is the correct default.
+# Windows applications keep their DLLs beside the executable rather than in a bin/
+# subdirectory. This has to be decided before GNUInstallDirs runs, and it has to be
+# this variable rather than a destination of our own, because Qt's deployment script
+# derives QT_DEPLOY_BIN_DIR from CMAKE_INSTALL_BINDIR and puts the Qt DLLs and qt.conf
+# there. Setting only our own destination split the two: MyNAS.exe landed at the root
+# and every DLL it needs landed in bin/, which produces an executable that cannot
+# start and says nothing about why.
+#
+# FORCE because GNUInstallDirs caches the value, so an earlier configure in the same
+# build directory would otherwise keep winning.
+if(WIN32)
+    set(CMAKE_INSTALL_BINDIR "."
+        CACHE PATH "Where the executable and its libraries go" FORCE)
+endif()
+
+include(GNUInstallDirs)
+
+# qt_add_executable already makes this a bundle on Apple platforms; what it cannot
+# guess is the identity. The bundle identifier in particular is not cosmetic — macOS
+# keys permission grants (Files and Folders, Local Network) to it, so changing it later
+# makes every user re-approve access.
+set_target_properties(MyNAS PROPERTIES
+    MACOSX_BUNDLE_BUNDLE_NAME          "NestDrive"
+    MACOSX_BUNDLE_GUI_IDENTIFIER       "net.nestdrive.app"
+    MACOSX_BUNDLE_BUNDLE_VERSION       "${PROJECT_VERSION}"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+)
+
+install(TARGETS MyNAS
+    BUNDLE  DESTINATION .
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+)
+
+# The desktop entry and icon are what turn a binary into something a Linux desktop
+# will show in its launcher, and linuxdeploy reads both out of the installed tree to
+# build the AppImage. Installing them (rather than passing them to linuxdeploy on the
+# command line) means a plain `make install` on Linux also produces a usable desktop
+# integration.
+if(UNIX AND NOT APPLE)
+    install(FILES packaging/linux/nestdrive.desktop
+            DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/applications")
+    install(FILES packaging/nestdrive.svg
+            DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/icons/hicolor/scalable/apps")
+endif()
+
+# Qt's own deployment, which runs windeployqt or macdeployqt as part of
+# `cmake --install`. Using Qt's wrapper rather than calling those tools directly means
+# the plugin set is chosen by the toolchain that did the build, so a Qt upgrade cannot
+# leave the package missing a plugin nobody remembered to list.
+#
+# Linux is excluded on purpose: there the equivalent job is done by linuxdeploy with
+# its Qt plugin, and running both would deploy the same libraries twice with different
+# ideas about where the QPA plugin path should point.
+if(WIN32 OR APPLE)
+    qt_generate_deploy_app_script(
+        TARGET MyNAS
+        OUTPUT_SCRIPT nestdrive_deploy_script
+        NO_UNSUPPORTED_PLATFORM_ERROR
+    )
+
+    # QT_DEPLOY_BIN_DIR has to be set here, and the documentation is wrong about why
+    # it does not need to be: the QtDeploySupport.cmake that Qt 6.10 generates falls
+    # back to a literal "bin" and never looks at CMAKE_INSTALL_BINDIR. Without this
+    # line the Windows install puts MyNAS.exe at the prefix root and every Qt DLL it
+    # links, plus the generated qt.conf, into bin/ — so the executable cannot find
+    # Qt6Core.dll and dies before main() with a loader error naming no cause.
+    #
+    # install(CODE) rather than a plain set(), because the value is needed in the
+    # install script's scope at install time, not at configure time. It has to come
+    # before the install(SCRIPT) that consumes it.
+    install(CODE "set(QT_DEPLOY_BIN_DIR \"${CMAKE_INSTALL_BINDIR}\")")
+    install(SCRIPT "${nestdrive_deploy_script}")
+endif()
+
+# CPack, for the Windows installer only. NSIS is preinstalled on GitHub's Windows
+# runners, so this costs no extra setup there; macOS and Linux are packaged by their
+# own native tools in .github/workflows/release.yml, because a .dmg and an AppImage
+# are each one command and CPack's generators for them add a layer without removing one.
+set(CPACK_PACKAGE_NAME            "NestDrive")
+set(CPACK_PACKAGE_VENDOR          "NestDrive")
+set(CPACK_PACKAGE_VERSION         "${PROJECT_VERSION}")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
+    "Your own storage, reachable from anywhere")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "NestDrive")
+set(CPACK_PACKAGE_FILE_NAME       "NestDrive-${PROJECT_VERSION}-windows-x64")
+
+# Creates the Start Menu shortcut. The directory has to be named explicitly because
+# NSIS looks in bin/ by default, and the layout above puts the executable at the root.
+set(CPACK_PACKAGE_EXECUTABLES        "MyNAS;NestDrive")
+set(CPACK_NSIS_EXECUTABLES_DIRECTORY ".")
+set(CPACK_NSIS_PACKAGE_NAME          "NestDrive")
+set(CPACK_NSIS_DISPLAY_NAME          "NestDrive ${PROJECT_VERSION}")
+
+# Upgrading in place otherwise leaves the previous version's Qt DLLs behind, and a
+# stale DLL beside a new executable fails at load time with a message that names
+# neither version.
+set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+
+include(CPack)

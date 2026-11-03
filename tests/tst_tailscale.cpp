@@ -1,5 +1,8 @@
 #include "core/Tls/Tailscale.h"
 
+#include "fixtures/NoTailscaleOnPath.h"
+
+#include <QDir>
 #include <QFile>
 #include <QSslCertificate>
 #include <QSslKey>
@@ -7,6 +10,13 @@
 #include <QtTest>
 
 #include <memory>
+
+/// What the resolver appends when looking for the binary on this platform.
+#ifdef Q_OS_WIN
+#  define TailscaleSuffix ".exe"
+#else
+#  define TailscaleSuffix ""
+#endif
 
 /**
  * @file
@@ -27,6 +37,7 @@ private slots:
     void cleanup();
 
     void reportsUnavailableWithoutABinary();
+    void fallsBackToPathWhenTheConfiguredPathIsWrong();
     void reportsUnavailableWhenTheVersionProbeFails();
     void readsTheVersionLine();
 
@@ -78,10 +89,51 @@ void TestTailscale::reportsUnavailableWithoutABinary()
     // The ordinary case on a machine where Tailscale is not installed, and it must
     // stay ordinary: the server still serves the LAN, so this is a configuration
     // rather than a fault.
+    //
+    // The guard is what makes that question answerable here — see the long note in
+    // fixtures/NoTailscaleOnPath.h. Without it this test says nothing about the code
+    // and everything about whether the machine running it happens to have Tailscale.
+    const NoTailscaleOnPath guard;
+
     const core::Tailscale tailscale(m_tmp->path() + QStringLiteral("/not-here.exe"));
 
     QVERIFY(!tailscale.isAvailable());
     QVERIFY(tailscale.versionLine().isEmpty());
+}
+
+void TestTailscale::fallsBackToPathWhenTheConfiguredPathIsWrong()
+{
+    // The other half of the contract above, and the reason the guard has to exist at
+    // all: an unrunnable configured path does NOT mean give up. Here the fixture is
+    // placed on PATH under the name the resolver looks for, so the fallback has
+    // something real to find.
+    QVERIFY(m_tmp->isValid());
+
+    const QString binDirectory = m_tmp->path() + QStringLiteral("/bin");
+    QVERIFY(QDir().mkpath(binDirectory));
+
+    const QString onPath = binDirectory + QStringLiteral("/tailscale")
+                           + QStringLiteral(TailscaleSuffix);
+    QVERIFY2(QFile::copy(QStringLiteral(FAKE_TAILSCALE_PATH), onPath),
+             "could not place the fixture on PATH");
+
+    // Prepended rather than substituted. Emptying PATH — which is what the guard in
+    // the test above does — would also hide the Qt DLLs the fixture itself links, so
+    // the copy would be found and then fail to start, and the test would report a
+    // broken fallback when the fallback was fine. Prepending shadows any real
+    // installation while leaving the loader able to do its job.
+    const QByteArray savedPath = qgetenv("PATH");
+    qputenv("PATH",
+            QDir::toNativeSeparators(binDirectory).toLocal8Bit()
+                + QDir::listSeparator().toLatin1() + savedPath);
+
+    qputenv("FAKE_TAILSCALE_MODE", QByteArray("ok"));
+    const core::Tailscale tailscale(m_tmp->path() + QStringLiteral("/not-here.exe"));
+
+    qputenv("PATH", savedPath);
+
+    QVERIFY2(tailscale.isAvailable(),
+             "a wrong configured path must fall back to PATH, not give up");
 }
 
 void TestTailscale::reportsUnavailableWhenTheVersionProbeFails()
