@@ -348,11 +348,22 @@ endif()
 
 include(GNUInstallDirs)
 
-# qt_add_executable already makes this a bundle on Apple platforms; what it cannot
-# guess is the identity. The bundle identifier in particular is not cosmetic — macOS
-# keys permission grants (Files and Folders, Local Network) to it, so changing it later
-# makes every user re-approve access.
+# MACOSX_BUNDLE has to be set explicitly, and it is easy to believe otherwise.
+# qt_add_executable() only sets it for you when the project has called
+# qt_standard_project_setup(), which this one does not; without it the target builds
+# as a plain Unix executable and every MACOSX_BUNDLE_* variable below is inert,
+# because those only populate an Info.plist that is never produced.
+#
+# The way that surfaces is indirect. qt_generate_deploy_app_script() reports
+# "Skipping runtime deployment steps ... Executable targets have to be app bundles",
+# which reads like a limitation of Qt rather than a missing property here, and the
+# install still succeeds — it just produces bin/MyNAS with no Qt frameworks beside it.
+#
+# The bundle identifier in particular is not cosmetic: macOS keys permission grants
+# (Files and Folders, Local Network) to it, so changing it later makes every existing
+# user re-approve access.
 set_target_properties(MyNAS PROPERTIES
+    MACOSX_BUNDLE                      TRUE
     MACOSX_BUNDLE_BUNDLE_NAME          "NestDrive"
     MACOSX_BUNDLE_GUI_IDENTIFIER       "net.nestdrive.app"
     MACOSX_BUNDLE_BUNDLE_VERSION       "${PROJECT_VERSION}"

@@ -341,11 +341,37 @@ thumbnails with no ffmpeg at all. That is a feature; the test called it a failur
 Now derived from `QImageReader::supportedImageFormats()`, so it tracks what the
 machine can do rather than what one machine could.
 
+### e. The macOS package was not a package — `CMakeLists.txt`
+
+Unlike the four above, this was in the packaging rules themselves rather than in
+pre-existing code. `MACOSX_BUNDLE` was never set on the target, because the comment
+beside it asserted that `qt_add_executable()` sets it on Apple platforms. It only does
+so when the project has called `qt_standard_project_setup()`, which this one does not.
+
+Every `MACOSX_BUNDLE_*` variable was therefore inert — they populate an Info.plist
+that was never generated — and the install produced `bin/MyNAS`, a bare Unix
+executable with no Qt beside it.
+
+The instructive part is how quiet it was. `cmake --install` **succeeded**, reporting
+only a note: *"Skipping runtime deployment steps ... Executable targets have to be app
+bundles"* — which reads as a limitation of Qt rather than a missing property here. And
+the gate passed it, because the gate asked only whether an executable existed.
+
+So the check was wrong too, and that is the more durable fix: each platform now
+asserts the **Qt runtime** landed, not just the binary. Matched by substring, since
+whether Qt arrives as `QtCore.framework` or `libQt6Core.6.dylib` is a property of the
+Qt build and not something this project should assert a spelling for.
+
 ### The pattern
 
-Three of the four are the same mistake in different clothes: **code that is correct
+Four of the five are the same mistake in different clothes: **code that is correct
 assumed its environment was the only environment.** A path form, an installed plugin,
-an available header.
+an available header, a default that depends on a call the project never makes.
+
+The fifth, (e), is a different and more uncomfortable lesson: **a gate that only
+checks for the thing it expects to find will pass a build that is missing everything
+else.** It is worth asking of any new check what a broken result would look like, and
+whether the check could tell the difference.
 
 Together with §7's Tailscale case, the rule generalises:
 
@@ -354,5 +380,5 @@ Together with §7's Tailscale case, the rule generalises:
 
 And the corollary, which is the one that costs real time: **when CI and a developer
 machine disagree, neither is automatically right.** Twice here the developer machine
-was wrong (b, and §7 in reverse); twice CI was testing something the author never
-intended to assert.
+was wrong (b and e); twice CI was testing something the author never intended to
+assert (c and d).

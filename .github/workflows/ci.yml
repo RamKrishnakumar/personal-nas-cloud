@@ -193,14 +193,42 @@ jobs:
         shell: bash
         run: |
           cmake --install build --prefix "$PWD/dist"
-          echo "── Installed ──"
-          find dist -maxdepth 3 | head -40
 
+          # Printed before the assertions, so a failure below is read next to the
+          # tree that caused it. A macOS bundle needs the extra depth: everything
+          # that matters sits under Contents/.
+          echo "── Installed ──"
+          find dist -maxdepth 5 | head -60
+
+          # Each platform asserts that the Qt runtime landed too, not merely that an
+          # executable exists. An earlier version checked only for the executable and
+          # passed on macOS while Qt deployment had in fact been skipped — the install
+          # step reports that as a note and still exits 0, so the only evidence is
+          # whether the frameworks are there.
           case "${{ runner.os }}" in
-            Windows) test -f dist/MyNAS.exe ;;
-            macOS)   test -d dist/MyNAS.app ;;
-            Linux)   test -f dist/bin/MyNAS \
-                     && test -f dist/share/applications/nestdrive.desktop ;;
+            Windows)
+              test -f dist/MyNAS.exe
+              test -f dist/Qt6Core.dll
+              test -f dist/plugins/sqldrivers/qsqlite.dll
+              ;;
+            macOS)
+              test -x dist/MyNAS.app/Contents/MacOS/MyNAS
+              test -f dist/MyNAS.app/Contents/Info.plist
+
+              # Matched by substring rather than by exact filename. Whether Qt
+              # arrives as QtCore.framework or libQt6Core.6.dylib depends on how the
+              # Qt being used was built, and asserting one spelling would fail the
+              # gate for a reason that has nothing to do with this project. What
+              # must not happen is finding nothing at all, which is what a skipped
+              # deployment looks like.
+              ls dist/MyNAS.app/Contents/Frameworks | grep -q QtCore
+              ls dist/MyNAS.app/Contents/PlugIns/sqldrivers | grep -q sqlite
+              ;;
+            Linux)
+              test -f dist/bin/MyNAS
+              test -f dist/share/applications/nestdrive.desktop
+              test -f dist/share/icons/hicolor/scalable/apps/nestdrive.svg
+              ;;
           esac
           echo "Install tree looks right for ${{ runner.os }}."
 
