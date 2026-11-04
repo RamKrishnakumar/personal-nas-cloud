@@ -55,6 +55,10 @@
 #  include <psapi.h>
 #elif defined(Q_OS_LINUX)
 #  include <QFile>
+// sysconf() and _SC_PAGESIZE, used below to turn /proc/self/statm's page count into
+// bytes. Easy to omit, because the Qt include above is the one this file obviously
+// needs and GCC's suggestion for the resulting error is "did you mean swscanf?".
+#  include <unistd.h>
 #endif
 
 namespace {

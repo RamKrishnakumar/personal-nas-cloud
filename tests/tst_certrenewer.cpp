@@ -1,6 +1,8 @@
 #include "core/Tls/CertRenewer.h"
 #include "core/Tls/Tailscale.h"
 
+#include "fixtures/NoTailscaleOnPath.h"
+
 #include <QFile>
 #include <QSignalSpy>
 #include <QSslCertificate>
@@ -383,6 +385,11 @@ void TestCertRenewer::doesNothingWithoutTailscale()
     // No Tailscale is an ordinary configuration, not a fault: the server runs on the
     // LAN with its self-signed certificate. So this reports nothing rather than
     // raising anything.
+    //
+    // See fixtures/NoTailscaleOnPath.h for why the guard is needed to ask this at
+    // all on a machine that does have Tailscale installed.
+    const NoTailscaleOnPath guard;
+
     core::Tailscale absent(m_tmp->path() + QStringLiteral("/not-here.exe"));
     core::CertRenewer renewer(&absent, certPath(), keyPath());
     renewer.setDnsName(QStringLiteral("nestdrive.tail1a2b3c.ts.net"));

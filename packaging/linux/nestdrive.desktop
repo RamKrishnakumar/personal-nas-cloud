@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=NestDrive
+GenericName=Personal Cloud Storage
+Comment=Your own storage, reachable from anywhere
+Exec=MyNAS
+Icon=nestdrive
+Terminal=false
+Categories=Network;FileTransfer;Utility;
+Keywords=NAS;storage;files;photos;server;
+StartupNotify=true

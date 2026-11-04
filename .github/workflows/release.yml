@@ -1,0 +1,360 @@
+# Builds the installers and publishes them. Runs from the production branch and
+# nowhere else.
+#
+# That restriction is enforced in three independent places, because "we only publish
+# from production" is the kind of rule that is true until someone clicks the wrong
+# button in the Actions tab:
+#
+#   1. on.push.branches lists only production, so no other push can start this.
+#   2. workflow_dispatch exists for re-running a release, but the `version` job
+#      refuses to run unless the ref really is production — the dispatch button lets
+#      you pick any branch, so trigger filtering alone is not enough.
+#   3. every other job needs `version`, so a refusal there stops the whole run.
+#
+# The version comes from project(MyNAS VERSION ...) in CMakeLists.txt. Releasing is
+# therefore: bump that number, merge to production. There is no second place to edit
+# and no way for the tag to disagree with the binary.
+
+name: Release
+
+on:
+  push:
+    branches: [production]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    name: Read version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+    steps:
+      - name: Refuse to publish from any branch but production
+        if: github.ref != 'refs/heads/production'
+        run: |
+          echo "::error::Releases are published from the production branch only."
+          echo "This run is on ${{ github.ref }}."
+          exit 1
+
+      - uses: actions/checkout@v4
+
+      - id: read
+        name: Read the version from CMakeLists.txt
+        run: |
+          version=$(grep -oP 'project\(MyNAS VERSION \K[0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt)
+          if [ -z "$version" ]; then
+            echo "::error::Could not read the version out of CMakeLists.txt."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing v$version"
+
+  # ── Windows: NSIS installer, plus a portable zip ───────────────────────────
+  windows:
+    name: Windows installer
+    needs: version
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: lukka/get-cmake@latest
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: 6.10.3
+          arch: win64_msvc2022_64
+          modules: qtimageformats
+          cache: true
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Make sure makensis is reachable
+        shell: bash
+        run: |
+          # NSIS ships in the runner image but is not always on PATH, and CPack's
+          # error for a missing makensis does not say that is what it wants.
+          echo "C:\Program Files (x86)\NSIS" >> "$GITHUB_PATH"
+          export PATH="/c/Program Files (x86)/NSIS:$PATH"
+          command -v makensis || choco install nsis -y --no-progress
+
+      - name: Build
+        shell: bash
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNESTDRIVE_BUILD_TESTS=OFF \
+            -DNESTDRIVE_BUILD_BENCH=OFF
+          cmake --build build --parallel
+
+      # CPack runs the install rules, which run windeployqt, so the packaged tree
+      # carries the Qt DLLs and plugin set chosen by the toolchain that built it.
+      - name: Package
+        shell: bash
+        run: |
+          cd build
+          cpack -G "NSIS;ZIP"
+          mkdir -p ../out
+          cp NestDrive-${VERSION}-windows-x64.exe ../out/
+          cp NestDrive-${VERSION}-windows-x64.zip ../out/
+          ls -la ../out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-windows
+          path: out/*
+          retention-days: 7
+
+  # ── macOS: a .dmg for Apple Silicon ───────────────────────────────────────
+  macos:
+    name: macOS disk image
+    needs: version
+    runs-on: macos-latest        # macos-latest is arm64, which is the target here.
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: lukka/get-cmake@latest
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: 6.10.3
+          arch: clang_64
+          modules: qtimageformats
+          cache: true
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
+            -DNESTDRIVE_BUILD_TESTS=OFF \
+            -DNESTDRIVE_BUILD_BENCH=OFF
+          cmake --build build --parallel
+
+      - name: Deploy the bundle
+        run: cmake --install build --prefix "$PWD/dist"
+
+      # This signature is not about trust — it is ad-hoc, so it proves nothing about
+      # who built it. It is about the binary running at all: on Apple Silicon the
+      # kernel refuses to execute an arm64 binary with no valid signature, and
+      # macdeployqt has just rewritten every rpath in the bundle, which invalidates
+      # whatever signature the linker left behind. Signing therefore has to come
+      # after deployment, not before.
+      #
+      # Users will still see Gatekeeper's "unidentified developer" warning, because
+      # that needs a paid Developer ID and notarisation. docs/CI-CD.md explains how
+      # to open it anyway and what adding real signing would involve.
+      - name: Sign ad-hoc and verify
+        run: |
+          codesign --force --deep --sign - dist/MyNAS.app
+          codesign --verify --deep --strict --verbose=2 dist/MyNAS.app
+
+      - name: Build the disk image
+        run: |
+          mkdir -p out staging
+          cp -R dist/MyNAS.app staging/NestDrive.app
+
+          # A symlink to /Applications is what makes the window users see on mount
+          # into something they can drag into, rather than a folder they have to
+          # know what to do with.
+          ln -s /Applications staging/Applications
+
+          hdiutil create \
+            -volname "NestDrive ${VERSION}" \
+            -srcfolder staging \
+            -ov -format UDZO \
+            "out/NestDrive-${VERSION}-macos-arm64.dmg"
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-macos
+          path: out/*
+          retention-days: 7
+
+  # ── Linux: one AppImage, no install step at all ────────────────────────────
+  linux:
+    name: Linux AppImage
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libgl1-mesa-dev libglu1-mesa-dev \
+            libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
+            libxcb-xinerama0 libxcb-xfixes0 \
+            libfontconfig1 libfreetype6 file
+
+      - uses: lukka/get-cmake@latest
+
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: 6.10.3
+          arch: linux_gcc_64
+          modules: qtimageformats
+          cache: true
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNESTDRIVE_BUILD_TESTS=OFF \
+            -DNESTDRIVE_BUILD_BENCH=OFF
+          cmake --build build --parallel
+
+      - name: Lay out the AppDir
+        run: cmake --install build --prefix "$PWD/AppDir/usr"
+
+      - name: Build the AppImage
+        env:
+          # The plugin deploys the QPA plugin and the ones it can infer from linked
+          # modules. These two it cannot infer, and both fail invisibly: without
+          # sqldrivers Qt6::Sql loads with no SQLite driver and the database never
+          # opens, and without imageformats thumbnails silently stop being WebP.
+          EXTRA_QT_PLUGINS: "sqldrivers;imageformats"
+
+          # Runs the tools by unpacking them instead of mounting them. GitHub's
+          # runners have no FUSE, so a type-2 AppImage cannot mount itself here —
+          # this affects the build tools only, not the AppImage they produce.
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        run: |
+          # linuxdeploy's Qt plugin finds Qt through qmake, not through CMake.
+          # Exported in the shell rather than in the env: block above, because
+          # QT_ROOT_DIR is set by the previous step and reading it here is one less
+          # thing that depends on when GitHub evaluates an expression.
+          export QMAKE="$QT_ROOT_DIR/bin/qmake"
+          "$QMAKE" -query QT_VERSION
+
+          base=https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous
+          plugin=https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous
+
+          # Downloaded without the .AppImage suffix on purpose: the glob that picks
+          # up the output below would otherwise match the tools as well.
+          curl -fsSL -o linuxdeploy           "$base/linuxdeploy-x86_64.AppImage"
+          curl -fsSL -o linuxdeploy-plugin-qt "$plugin/linuxdeploy-plugin-qt-x86_64.AppImage"
+          chmod +x linuxdeploy linuxdeploy-plugin-qt
+          export PATH="$PWD:$PATH"
+
+          ./linuxdeploy \
+            --appdir AppDir \
+            --executable AppDir/usr/bin/MyNAS \
+            --desktop-file AppDir/usr/share/applications/nestdrive.desktop \
+            --icon-file AppDir/usr/share/icons/hicolor/scalable/apps/nestdrive.svg \
+            --plugin qt \
+            --output appimage
+
+          mkdir -p out
+          mv ./*.AppImage "out/NestDrive-${VERSION}-linux-x86_64.AppImage"
+          chmod +x out/*.AppImage
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-linux
+          path: out/*
+          retention-days: 7
+
+  # ── Publish ───────────────────────────────────────────────────────────────
+  publish:
+    name: Publish the release
+    needs: [version, windows, macos, linux]
+    runs-on: ubuntu-latest
+
+    # The only job in either workflow that can write to the repository, and it can
+    # write exactly one thing: releases.
+    permissions:
+      contents: write
+
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      # fetch-depth: 0 because the release notes are generated from `git log` between
+      # tags, and the default shallow clone has neither the tags nor the history to
+      # compare against — git describe would simply fail.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          merge-multiple: true
+          path: out
+
+      - name: Checksums
+        working-directory: out
+        run: |
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Release notes
+        run: |
+          cat > notes.md <<'HEADER'
+          ## Install
+
+          | Platform | File | Notes |
+          |---|---|---|
+          | **Windows 10/11 (x64)** | `...-windows-x64.exe` | Installer. SmartScreen will warn — **More info → Run anyway**. |
+          | **macOS (Apple Silicon)** | `...-macos-arm64.dmg` | Open, drag to Applications. First launch: **right-click → Open**. |
+          | **Linux (x86_64)** | `...-linux-x86_64.AppImage` | `chmod +x` it and run. No install needed. |
+
+          Both warnings are because the binaries are unsigned — see
+          `docs/CI-CD.md` for what signing them would involve.
+
+          Video features need `ffmpeg` on `PATH`; everything else works without it.
+          Reaching your files from outside the house is set up in-app under
+          **Remote access…** — see `docs/REMOTE-ACCESS.md`.
+
+          ## Changes
+          HEADER
+
+          # Everything since the previous tag, so the notes are generated from what
+          # was actually committed rather than from memory.
+          previous=$(git describe --tags --abbrev=0 "v${VERSION}^" 2>/dev/null \
+                     || git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
+
+          if [ -n "$previous" ]; then
+            git log --no-merges --pretty='- %s' "${previous}..HEAD" >> notes.md
+          else
+            echo "- First packaged release." >> notes.md
+          fi
+
+          cat notes.md
+
+      - name: Create or update the release
+        run: |
+          tag="v${VERSION}"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "$tag exists — replacing its files."
+            gh release upload "$tag" out/* --clobber
+            gh release edit   "$tag" --notes-file notes.md
+          else
+            gh release create "$tag" out/* \
+              --title "NestDrive $tag" \
+              --notes-file notes.md
+          fi
+
+          gh release view "$tag"

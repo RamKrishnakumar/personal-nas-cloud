@@ -7,6 +7,7 @@
 #include <QImage>
 #include <QProcess>
 #include <QSqlQuery>
+#include <QFileInfo>
 #include <QTemporaryDir>
 #include <QThread>
 
@@ -76,10 +77,30 @@ private slots:
     void doesNotFollowDirectorySymlinks();
 
 private:
+    /**
+     * @brief A path under the temporary directory, in the form the scanner uses.
+     *
+     * Built from the *canonical* temporary root, not from QTemporaryDir::path(),
+     * because ThumbnailScanner::start() canonicalises its root and enqueues that —
+     * so every path it hands to the cache has links resolved, and the cache keys on
+     * the path string it is given.
+     *
+     * On macOS those two forms never agree: the temporary directory is under `/var`,
+     * which is a symlink to `/private/var`. Warming wrote keys for
+     * `/private/var/.../new.png` while this helper looked up `/var/.../new.png`, so
+     * every hit() after a scan missed, and the suite failed on macOS alone.
+     *
+     * This matches production rather than working around it: http::resolveSafe()
+     * also returns canonical paths, so the server looks thumbnails up with the same
+     * keys the scanner wrote. It is only the test that was using a third form.
+     */
     QString path(const QString& relative) const
     {
-        return m_tmp->path() + QLatin1Char('/') + relative;
+        return m_root + QLatin1Char('/') + relative;
     }
+
+    /// The temporary directory with links resolved. See path().
+    QString                          m_root;
 
     std::unique_ptr<QTemporaryDir>   m_tmp;
     std::unique_ptr<db::Database>    m_database;
@@ -94,6 +115,10 @@ void TestThumbnailScanner::init()
 {
     m_tmp = std::make_unique<QTemporaryDir>();
     QVERIFY(m_tmp->isValid());
+
+    // Resolved once, before anything builds a path from it.
+    m_root = QFileInfo(m_tmp->path()).canonicalFilePath();
+    QVERIFY2(!m_root.isEmpty(), "the temporary directory could not be canonicalised");
 
     QVERIFY(QDir().mkpath(path(QStringLiteral("nas/Album/2024"))));
     QVERIFY(QDir().mkpath(path(QStringLiteral("nas/Album/2025"))));

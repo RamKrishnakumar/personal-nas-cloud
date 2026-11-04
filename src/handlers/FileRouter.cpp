@@ -137,25 +137,33 @@ QString humanSize(qint64 bytes)
 namespace handlers {
 
 FileRouter::FileRouter(QString nasRoot)
-    : m_nasRoot(std::move(nasRoot))
 {
+    setNasRoot(nasRoot);
 }
 
 void FileRouter::setNasRoot(const QString& nasRoot)
 {
-    m_nasRoot = nasRoot;
+    // Stored absolute, because http::stripRoot() compares strings and will not make
+    // a relative root absolute for itself. resolveSafe() already resolves the root
+    // the same way internally, so this only makes the two agree.
+    m_nasRoot = QDir::cleanPath(QFileInfo(nasRoot).absoluteFilePath());
+
+    // Resolved once here rather than per request, because it is a syscall and the
+    // root does not move while the server runs. Empty when the root does not exist —
+    // a disconnected drive — and http::stripRoot() handles that by falling back to
+    // the configured form.
+    m_nasRootCanonical = QFileInfo(nasRoot).canonicalFilePath();
 }
 
 QString FileRouter::nasRelativePath(const QString& resolvedAbsolutePath) const
 {
-    QString relative = resolvedAbsolutePath;
-
-    // resolveSafe() guarantees the result is inside the root, so this only has to
-    // strip the prefix rather than verify containment again.
-    if (relative.startsWith(m_nasRoot, Qt::CaseInsensitive))
-        relative = relative.mid(m_nasRoot.size());
-
-    return auth::normalisePermissionPath(relative);
+    // Both forms of the root are passed, because resolveSafe() returns the canonical
+    // path for a file that exists and a configured-root path for one that does not.
+    // Stripping only the configured root left absolute filesystem paths to be matched
+    // against folder permission rules wherever the root was reached through a
+    // symlink — see the note on http::stripRoot().
+    return auth::normalisePermissionPath(
+        http::stripRoot(m_nasRoot, m_nasRootCanonical, resolvedAbsolutePath));
 }
 
 void FileRouter::handle(http::Connection& connection, const http::Request& request)

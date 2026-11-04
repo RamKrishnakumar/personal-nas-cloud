@@ -7,6 +7,32 @@
 #include <QStandardPaths>
 #include <QDebug>
 
+namespace {
+
+/**
+ * @brief The storage folder to offer when config.ini does not name one.
+ *
+ * Windows keeps "E:/" because that is the second drive this was built against and
+ * changing it would move an existing user's library out from under them. Everywhere
+ * else "E:/" is not a path at all, so suggesting it meant a Mac or Linux user's first
+ * launch always showed the fallback with a warning about a drive that cannot exist.
+ *
+ * The home directory is the honest answer there: it exists, it is writable, and it is
+ * somewhere the owner can recognise. MainWindow still falls back if even this is
+ * missing, so this only changes which path is tried first.
+ */
+QString defaultNasRoot()
+{
+#ifdef Q_OS_WIN
+    return QStringLiteral("E:/");
+#else
+    const QString home = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
+    return home.isEmpty() ? QDir::rootPath() : home;
+#endif
+}
+
+} // namespace
+
 /**
  * @brief Returns the path to the configuration file.
  * @return The path to config.ini.
@@ -102,7 +128,7 @@ void AppConfig::migrateLegacyKeys()
 void AppConfig::writeStarterConfig()
 {
     m_settings.setValue("Server/port",     9090);
-    m_settings.setValue("Server/nasRoot",  "E:/");
+    m_settings.setValue("Server/nasRoot",  defaultNasRoot());
     m_settings.setValue("Server/useHttps", false);
     m_settings.setValue("Server/certPath", "cert.pem");
     m_settings.setValue("Server/keyPath",  "key.pem");
@@ -151,8 +177,9 @@ quint16 AppConfig::serverPort() const
 
 QString AppConfig::nasRoot() const
 {
-    // Returns E:/ as default if 'nasRoot' key is not found in config.ini
-    return m_settings.value("Server/nasRoot", "E:/").toString();
+    // Falls back to the platform's default when 'nasRoot' is absent — see
+    // defaultNasRoot(), which is E:/ on Windows and the home directory elsewhere.
+    return m_settings.value("Server/nasRoot", defaultNasRoot()).toString();
 }
 
 
