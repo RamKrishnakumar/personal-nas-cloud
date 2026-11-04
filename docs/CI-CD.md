@@ -7,17 +7,34 @@ and `release.yml` only ever runs on the `production` branch.**
 
 ---
 
-## 1. What runs on every push and pull request
+## 1. What runs, and when
 
 `.github/workflows/ci.yml`.
 
-| Job | Where | Blocking | What it is for |
+| Job | Where | Runs on | Blocking |
 |---|---|---|---|
-| **Secrets and hygiene** | Linux | yes | No `.pem`, `.key`, `.crt`, `.pfx`, `.p12` or `config.ini` in the index. Also validates the Linux desktop entry. |
-| **Linux · x86_64 · GCC** | `ubuntu-latest` | yes | Configure, build, 33 test suites, install tree. |
-| **Windows · x64 · MSVC** | `windows-latest` | yes | Same. |
-| **macOS · Apple Silicon · Clang** | `macos-latest` | yes | Same. |
-| **Compiler warnings** | Linux | **no** | `-Wall -Wextra -Wpedantic`, counted and summarised. Advisory. |
+| **Secrets and hygiene** | Linux | **every push, every PR** | yes |
+| **Linux · x86_64 · GCC** | `ubuntu-latest` | PRs, and pushes to `main` / `develop` / `production` | yes |
+| **Windows · x64 · MSVC** | `windows-latest` | same | yes |
+| **macOS · Apple Silicon · Clang** | `macos-latest` | same | yes |
+| **Compiler warnings** | Linux | PRs only | **no** |
+
+### Why the build is not on every push
+
+Three operating systems is roughly eight minutes and three runners. During a day's
+work most pushes are saves, and "does it still build" has not changed since the last
+one — so paying the full matrix each time buys very little.
+
+The matrix therefore runs where its answer is used: **on a pull request**, which is
+what branch protection actually gates, and on a direct push to a long-lived branch,
+because those bypass review and would otherwise never be built at all.
+
+Pushing to a feature branch still runs `guard`, so a leaked private key is caught in
+twenty seconds no matter where it was pushed. That is the one check whose value does
+not survive being deferred.
+
+**To force a full run before the work is ready, open the pull request as a draft** —
+`pull_request` fires for drafts, so the matrix runs without asking anyone to review.
 
 ### Why these and not a linter
 
@@ -47,6 +64,12 @@ reporting history.
 - **`ctest -j 2`**, not the runner's core count. A dozen suites bind real TCP sockets
   on localhost; more parallelism makes them compete for ports. A flaky gate is worse
   than a slow one, because a failure nobody trusts gets re-run instead of read.
+- **`--output-junit` as well as `--output-on-failure`.** At `-j 2` ctest interleaves
+  two suites into one output stream, and diagnosing the first macOS failure cost two
+  extra rounds because one suite's assertions were printed inside another's and the
+  first suite's were lost entirely. The XML has one entry per test with its own
+  message, and is uploaded with the failure logs. **Read that, not the console log,
+  when a parallel run fails.**
 - **`QT_QPA_PLATFORM=offscreen`.** Four suites link `Qt6::Gui`, so `QTEST_MAIN` gives
   them a `QGuiApplication`, which will not start without a platform plugin. Runners
   have no display.
@@ -201,11 +224,9 @@ The likeliest places:
 - **`jurplel/install-qt-action` and Qt 6.10.3.** If `aqtinstall` does not offer that
   exact patch version for a platform, the step fails early and clearly. Dropping to
   `6.10` or `6.9.*` in both workflows is the fix.
-- **The macOS and Linux builds have never been compiled at all.** The `Q_OS_MACOS` and
-  `Q_OS_LINUX` branches in `HardwareTier.cpp`, `ThumbnailScanner.cpp`,
-  `PathResolver.cpp` and `Permissions.cpp` are written but have never seen a compiler.
-  This workflow is the first thing that will ever check them, and the first run is the
-  most likely to find something.
+- ~~**The macOS and Linux builds have never been compiled at all.**~~ They have now,
+  and the first run found four things — see §8. Linux and Windows are green; macOS
+  needed three fixes.
 - **`linuxdeploy-plugin-qt` and the SQLite driver.** `EXTRA_QT_PLUGINS` names
   `sqldrivers` explicitly because the plugin cannot infer it, and the failure is
   invisible: the AppImage starts, `Qt6::Sql` loads with no driver, and the database
@@ -259,3 +280,79 @@ everywhere. A second test now covers the fallback itself, by putting the fixture
 The general rule: **a test whose result depends on what is installed outside the
 repository is not a test, it is a measurement of the machine.** If CI and a developer
 machine disagree, suspect that before suspecting either one.
+
+---
+
+## 8. What the first three-platform run actually found
+
+Four defects, in one run, none of which two years of Windows testing had surfaced.
+Recorded because the pattern matters more than the individual bugs.
+
+### a. Linux would not compile — `tools/bench/main.cpp`
+
+`sysconf(_SC_PAGESIZE)` in the `Q_OS_LINUX` branch with no `<unistd.h>`.
+`HardwareTier.cpp` had always included it; bench never had to.
+
+Worth noting where this did *not* fail: `release.yml` passes
+`-DNESTDRIVE_BUILD_BENCH=OFF`, so a release from `production` would have packaged
+Linux successfully while the measurement harness was broken. The gate caught something
+the publishing path does not look at.
+
+### b. Folder permissions could be bypassed — `FileRouter::nasRelativePath()`
+
+**The serious one.** macOS's `/var` is a symlink to `/private/var`, so
+`canonicalFilePath()` returns `/private/var/...` while the configured root stays
+`/var/...`. The code stripped only the configured root, so nothing matched and the
+full absolute filesystem path survived.
+
+That path is what folder permissions are matched against. Unstripped, a rule written
+for `/Private` no longer covers the request, `auth::resolve()` finds no matching
+prefix, and Rule 4 grants the role default — **read and write for Admin and Family.**
+An explicit `PermLevel::None` denial on a subfolder stopped applying. Guests fail
+closed, so the exposure was bounded to roles that already have broad access, but a
+deny rule that silently stops being a deny rule is a security bug.
+
+**It is not a macOS bug.** Any library root reached through a symlink lands in the
+same state — `~/Drive` pointing at an external volume, `/home` symlinked on some
+distributions. macOS is only where it happens every single time.
+
+Fixed with `http::stripRoot(configuredRoot, canonicalRoot, absolutePath)`, which tries
+both forms longest-first — one root can legitimately contain the other, and stripping
+the shorter leaves a fragment that becomes its own permission prefix. Kept pure and
+string-only so all seven cases run on Windows, where the bug cannot be reproduced.
+
+### c. The scanner tests used a third path form — `tst_thumbnailscanner`
+
+`ThumbnailScanner::start()` enqueues `m_rootCanonical`, so every path it gives the
+cache has links resolved, and `ThumbnailCache` keys on the string it is handed. The
+test looked up `QTemporaryDir::path()`, which on macOS is the `/var` form. Warming
+wrote `/private/var/...` keys; every `hit()` after a scan missed.
+
+Unlike (b) this was only a test bug: `resolveSafe()` returns canonical paths too, so
+in production the server's lookups and the scanner's writes already agreed. The test
+was the only party using an unresolved path.
+
+### d. A test asserted a platform fact as a universal one — `tst_thumbnailcache`
+
+`QVERIFY(!m_cache->canGenerateFor("photo.heic"))` — true on Windows, false on macOS,
+because macOS ships a HEIF image plugin with Qt. So on a Mac, HEIC photos get
+thumbnails with no ffmpeg at all. That is a feature; the test called it a failure.
+
+Now derived from `QImageReader::supportedImageFormats()`, so it tracks what the
+machine can do rather than what one machine could.
+
+### The pattern
+
+Three of the four are the same mistake in different clothes: **code that is correct
+assumed its environment was the only environment.** A path form, an installed plugin,
+an available header.
+
+Together with §7's Tailscale case, the rule generalises:
+
+> If a check can give different answers on two machines, it must be told which answer
+> to expect, or it is measuring the machine rather than the code.
+
+And the corollary, which is the one that costs real time: **when CI and a developer
+machine disagree, neither is automatically right.** Twice here the developer machine
+was wrong (b, and §7 in reverse); twice CI was testing something the author never
+intended to assert.

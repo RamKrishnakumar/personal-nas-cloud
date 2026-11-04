@@ -81,6 +81,23 @@ jobs:
     needs: guard
     runs-on: ${{ matrix.os }}
 
+    # Three operating systems is roughly eight minutes and three runners. Paying that
+    # on every push to a working branch buys very little: during a day's work most
+    # pushes are saves, and the answer to "does it still build" has not changed.
+    #
+    # So the full matrix runs where its answer is actually used — on a pull request,
+    # which is the thing branch protection gates — and on a direct push to a
+    # long-lived branch, because those skip review and would otherwise go unbuilt
+    # entirely.
+    #
+    # Pushing to a feature branch still runs `guard`, so a leaked key is caught in
+    # twenty seconds regardless. To get a full run on demand before opening the pull
+    # request, open it as a draft: pull_request fires for drafts too.
+    if: >-
+      github.event_name == 'pull_request' ||
+      contains(fromJSON('["refs/heads/main", "refs/heads/develop", "refs/heads/production"]'),
+               github.ref)
+
     # Each platform's result is worth knowing independently. With fail-fast on, a
     # Linux failure cancels the macOS job and hides whether that one was also broken,
     # which turns one fix-and-push cycle into two.
@@ -157,9 +174,17 @@ jobs:
       # bind real TCP sockets on localhost, and running many at once makes them
       # compete for ports. A flaky gate is worse than a slow one, because a failure
       # nobody trusts gets re-run instead of read.
+      # --output-junit as well as --output-on-failure, because -j 2 interleaves the
+      # live output of two suites into one stream. Diagnosing the first macOS failure
+      # cost two extra rounds for exactly that reason: one suite's assertions were
+      # printed inside another's, and the first suite's were lost. The XML has one
+      # entry per test with its own message, so a failure can be read without
+      # untangling anything.
       - name: Test
         shell: bash
-        run: ctest --test-dir build --output-on-failure --timeout 300 -j 2
+        run: |
+          ctest --test-dir build --output-on-failure --timeout 300 -j 2 \
+            --output-junit "$PWD/test-results.xml"
 
       # Proves the packaging inputs exist on this platform before release.yml depends
       # on them. Without it, a broken install rule is discovered on the production
@@ -187,6 +212,7 @@ jobs:
         with:
           name: logs-${{ runner.os }}
           path: |
+            test-results.xml
             build/Testing/**/*.log
             build/CMakeFiles/CMakeConfigureLog.yaml
           retention-days: 7
@@ -202,6 +228,10 @@ jobs:
     needs: guard
     runs-on: ubuntu-latest
     continue-on-error: true
+
+    # Pull requests only. Nobody reads an advisory warning count on a mid-work push,
+    # and a job whose output is ignored is a job not worth paying for.
+    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
 

@@ -477,8 +477,21 @@ void TestThumbnailCache::offersNothingForAVideoWithoutAnExtractor()
     // becoming a broken one.
     QVERIFY(writePlaceholder(QStringLiteral("clip.mp4")));
 
+    // A video needs a decoder nothing in Qt provides, on every platform.
     QVERIFY(!m_cache->canGenerateFor(QStringLiteral("clip.mp4")));
-    QVERIFY(!m_cache->canGenerateFor(QStringLiteral("photo.heic")));
+
+    // HEIC is different, and asserting it is not readable was wrong. macOS ships a
+    // HEIF image plugin with Qt, so there `canGenerateFor("photo.heic")` is correctly
+    // true with no ffmpeg anywhere — Apple's own decoder handles it. Windows has no
+    // such plugin unless the user installs the HEIF extension, which is why this read
+    // as a fact about HEIC rather than a fact about the platform.
+    //
+    // Asked of the same list the cache itself consults, so this tracks whatever the
+    // machine can actually do instead of encoding one machine's answer.
+    const bool qtReadsHeic =
+        QImageReader::supportedImageFormats().contains(QByteArrayLiteral("heic"));
+
+    QCOMPARE(m_cache->canGenerateFor(QStringLiteral("photo.heic")), qtReadsHeic);
 
     // And nothing is attempted, so no decode-failure row is written either — the file
     // is not undecodable, it is simply not something we offer to decode.
