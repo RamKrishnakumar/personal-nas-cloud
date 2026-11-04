@@ -1,0 +1,301 @@
+# Gates that run on every push and every pull request.
+#
+# The point of this file is to fail before production does. It does not package or
+# publish anything — that is release.yml, which only ever runs on the production
+# branch.
+#
+# Why these gates and not a linter: a C++ compiler is the only authority on whether
+# C++ is valid, so "does it build on all three platforms" IS the syntax test, and it
+# is also the only check that catches the portability mistakes this project is most
+# exposed to — a Windows-only API reached without a Q_OS_WIN guard compiles fine here
+# and fails only on a machine the author does not own.
+
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: ['**']
+
+# Pushing twice in a row should not pay for two full three-platform runs; the older
+# one is answering a question nobody is asking any more. Never cancels on production.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/production' }}
+
+env:
+  QT_VERSION: 6.10.3
+
+  # Four suites link Qt6::Gui, so QTEST_MAIN gives them a QGuiApplication, which
+  # refuses to start without a platform plugin. CI runners have no display. Setting it
+  # for every platform rather than only Linux keeps the three runs comparable.
+  QT_QPA_PLATFORM: offscreen
+
+permissions:
+  contents: read
+
+jobs:
+  # ── Cheap gate, ~20 seconds ────────────────────────────────────────────────
+  # Runs first and alone so that the mistake which costs the most to discover late
+  # is the one found soonest. A leaked private key cannot be un-leaked by a revert:
+  # the push is already in the reflog and on GitHub's servers.
+  guard:
+    name: Secrets and hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No credentials or private keys may be tracked
+        run: |
+          # .gitignore already covers these, but .gitignore only applies to files
+          # git has not been told about. A `git add -f`, or a file committed before
+          # the ignore rule existed, slips straight past it.
+          bad=$(git ls-files \
+            | grep -Ei '(\.pem|\.key|\.crt|\.pfx|\.p12|\.jks)$|(^|/)config\.ini$' \
+            || true)
+
+          if [ -n "$bad" ]; then
+            echo "::error::These files must never be committed:"
+            echo "$bad"
+            echo ""
+            echo "Remove them from the index with:"
+            echo "  git rm --cached <file>"
+            echo "and rotate anything secret that has already been pushed."
+            exit 1
+          fi
+          echo "Clean — no certificates, keys or config.ini in the index."
+
+      - name: The desktop entry must be valid
+        run: |
+          # Catches a typo in nestdrive.desktop here rather than in the AppImage
+          # build, where the error arrives as a linuxdeploy failure that does not
+          # mention the file.
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends desktop-file-utils
+          desktop-file-validate packaging/linux/nestdrive.desktop
+
+  # ── The real gate ──────────────────────────────────────────────────────────
+  build:
+    name: ${{ matrix.label }}
+    needs: guard
+    runs-on: ${{ matrix.os }}
+
+    # Three operating systems is roughly eight minutes and three runners. Paying that
+    # on every push to a working branch buys very little: during a day's work most
+    # pushes are saves, and the answer to "does it still build" has not changed.
+    #
+    # So the full matrix runs where its answer is actually used — on a pull request,
+    # which is the thing branch protection gates — and on a direct push to a
+    # long-lived branch, because those skip review and would otherwise go unbuilt
+    # entirely.
+    #
+    # Pushing to a feature branch still runs `guard`, so a leaked key is caught in
+    # twenty seconds regardless. To get a full run on demand before opening the pull
+    # request, open it as a draft: pull_request fires for drafts too.
+    if: >-
+      github.event_name == 'pull_request' ||
+      contains(fromJSON('["refs/heads/main", "refs/heads/develop", "refs/heads/production"]'),
+               github.ref)
+
+    # Each platform's result is worth knowing independently. With fail-fast on, a
+    # Linux failure cancels the macOS job and hides whether that one was also broken,
+    # which turns one fix-and-push cycle into two.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux · x86_64 · GCC
+            os: ubuntu-latest
+            qt_arch: linux_gcc_64
+          - label: Windows · x64 · MSVC
+            os: windows-latest
+            qt_arch: win64_msvc2022_64
+          - label: macOS · Apple Silicon · Clang
+            os: macos-latest
+            qt_arch: clang_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Qt on Linux links against the X and OpenGL stacks even when the application
+      # never opens a window, because the Gui module is linked, not loaded on demand.
+      # The offscreen plugin still needs fontconfig and freetype present.
+      - name: Install Qt's Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libgl1-mesa-dev libglu1-mesa-dev \
+            libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
+            libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
+            libxcb-xinerama0 libxcb-xfixes0 \
+            libfontconfig1 libfreetype6
+
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@latest
+
+      - name: Install Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: ${{ matrix.qt_arch }}
+          # qtimageformats is what makes thumbnails come out as WebP rather than
+          # JPEG. ThumbnailCache already prefers WebP when the plugin is present and
+          # falls back silently when it is not, so without this the suites would pass
+          # while testing the fallback path on every platform.
+          modules: qtimageformats
+          cache: true
+
+      # MSVC's compiler is not on PATH until vcvars has run, and vcvars only affects
+      # the process it runs in. This action exports the resulting environment so later
+      # steps inherit it, which a plain `call vcvars64.bat` in one step cannot do.
+      - name: Set up MSVC
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # This step is the syntax check. Configuring also proves the new install and
+      # packaging rules are valid on this platform, which a build alone would not.
+      - name: Configure
+        shell: bash
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNESTDRIVE_BUILD_TESTS=ON \
+            -DNESTDRIVE_BUILD_BENCH=ON
+
+      - name: Build
+        shell: bash
+        run: cmake --build build --parallel
+
+      # -j 2 rather than the runner's core count on purpose: a dozen of these suites
+      # bind real TCP sockets on localhost, and running many at once makes them
+      # compete for ports. A flaky gate is worse than a slow one, because a failure
+      # nobody trusts gets re-run instead of read.
+      # --output-junit as well as --output-on-failure, because -j 2 interleaves the
+      # live output of two suites into one stream. Diagnosing the first macOS failure
+      # cost two extra rounds for exactly that reason: one suite's assertions were
+      # printed inside another's, and the first suite's were lost. The XML has one
+      # entry per test with its own message, so a failure can be read without
+      # untangling anything.
+      - name: Test
+        shell: bash
+        run: |
+          ctest --test-dir build --output-on-failure --timeout 300 -j 2 \
+            --output-junit "$PWD/test-results.xml"
+
+      # Proves the packaging inputs exist on this platform before release.yml depends
+      # on them. Without it, a broken install rule is discovered on the production
+      # branch, which is the one place it must never be discovered.
+      - name: Verify the install tree
+        shell: bash
+        run: |
+          cmake --install build --prefix "$PWD/dist"
+
+          # Printed before the assertions, so a failure below is read next to the
+          # tree that caused it. A macOS bundle needs the extra depth: everything
+          # that matters sits under Contents/.
+          echo "── Installed ──"
+          find dist -maxdepth 5 | head -60
+
+          # Each platform asserts that the Qt runtime landed too, not merely that an
+          # executable exists. An earlier version checked only for the executable and
+          # passed on macOS while Qt deployment had in fact been skipped — the install
+          # step reports that as a note and still exits 0, so the only evidence is
+          # whether the frameworks are there.
+          case "${{ runner.os }}" in
+            Windows)
+              test -f dist/MyNAS.exe
+              test -f dist/Qt6Core.dll
+              test -f dist/plugins/sqldrivers/qsqlite.dll
+              ;;
+            macOS)
+              test -x dist/MyNAS.app/Contents/MacOS/MyNAS
+              test -f dist/MyNAS.app/Contents/Info.plist
+
+              # Matched by substring rather than by exact filename. Whether Qt
+              # arrives as QtCore.framework or libQt6Core.6.dylib depends on how the
+              # Qt being used was built, and asserting one spelling would fail the
+              # gate for a reason that has nothing to do with this project. What
+              # must not happen is finding nothing at all, which is what a skipped
+              # deployment looks like.
+              ls dist/MyNAS.app/Contents/Frameworks | grep -q QtCore
+              ls dist/MyNAS.app/Contents/PlugIns/sqldrivers | grep -q sqlite
+              ;;
+            Linux)
+              test -f dist/bin/MyNAS
+              test -f dist/share/applications/nestdrive.desktop
+              test -f dist/share/icons/hicolor/scalable/apps/nestdrive.svg
+              ;;
+          esac
+          echo "Install tree looks right for ${{ runner.os }}."
+
+      # Kept only when something failed, because that is the only time anyone opens
+      # it, and uploading it unconditionally would store a copy of every green run.
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-${{ runner.os }}
+          path: |
+            test-results.xml
+            build/Testing/**/*.log
+            build/CMakeFiles/CMakeConfigureLog.yaml
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ── Advisory, never blocking ───────────────────────────────────────────────
+  # Deliberately not a required check. The codebase has never been built with
+  # -Wall -Wextra, so this starts from an unknown warning count; making it blocking
+  # today would wedge every branch on pre-existing warnings nobody chose to take on.
+  # Read the summary, fix what it finds, and promote it to blocking once it is clean.
+  warnings:
+    name: Compiler warnings (advisory)
+    needs: guard
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    # Pull requests only. Nobody reads an advisory warning count on a mid-work push,
+    # and a job whose output is ignored is a job not worth paying for.
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Qt's Linux dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            libgl1-mesa-dev libxkbcommon-x11-0 libfontconfig1 libfreetype6
+
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@latest
+
+      - name: Install Qt ${{ env.QT_VERSION }}
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: linux_gcc_64
+          modules: qtimageformats
+          cache: true
+
+      - name: Build with warnings enabled
+        run: |
+          cmake -S . -B build-warn -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNESTDRIVE_BUILD_TESTS=OFF \
+            -DCMAKE_CXX_FLAGS="-Wall -Wextra -Wpedantic"
+          cmake --build build-warn --parallel 2>&1 | tee build.log || true
+
+      - name: Summarise
+        run: |
+          count=$(grep -c 'warning:' build.log || true)
+          {
+            echo "### Compiler warnings: ${count}"
+            echo ""
+            echo "Most frequent kinds:"
+            echo '```'
+            grep -o '\[-W[a-z0-9-]*\]' build.log | sort | uniq -c | sort -rn | head -15
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

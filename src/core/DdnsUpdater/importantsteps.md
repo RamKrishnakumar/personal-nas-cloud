@@ -1,3 +1,27 @@
+> ## ⚠️ Requires a real public IP — and NestDrive can now tell you
+>
+> Everything below assumes the address in your router's WAN status is the address the
+> internet sees. On many Indian home connections it is not: the provider runs its own
+> NAT in front of you, and a forwarding rule then cannot work at all, because nothing
+> on the internet can address your router.
+>
+> **Open NestDrive's Remote access… dialog first.** It asks the router over UPnP,
+> compares the answer with what the internet reports, and tells you which situation
+> you are in. If it says *Behind the provider's NAT*, stop here — no setting on this
+> page will help; use Tailscale instead. If it says *Public IP address*, everything
+> below applies, and the dialog's **Forward the port** button can do step 1 for you.
+>
+> If it says *Not determined*, the router would not answer. Make the comparison by
+> hand — WAN IP on the router's admin page against whatismyip.com — and record the
+> result as `[Remote] connectionType` in `config.ini`.
+>
+> Both situations exist in this household: the Airtel line is behind the provider's
+> NAT, the BSNL line is not. That is why NestDrive measures rather than assumes, and
+> why this document is one of two paths rather than the only one.
+>
+> See [docs/REMOTE-ACCESS.md](../../../docs/REMOTE-ACCESS.md) — in particular §5, for
+> the certificate step that gives the shareable link a padlock.
+
 Internet → <WAN Ip address>:9090 → Router Port Forward → 192.168.1.100:9090 → NestDrive
               (your public IP)                            (your laptop)
 Three parts:

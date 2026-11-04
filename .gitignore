@@ -124,8 +124,25 @@ translations/
 Thumbs.db
 desktop.ini
 
+# Packaging output. These are what `cmake --install` and the release workflow
+# produce locally; the published copies live on the GitHub release, not in git.
+dist/
+AppDir/
+_CPack_Packages/
+*.AppImage
+*.dmg
+NestDrive-*.zip
+NestDrive-*.exe
+
 # Local config - contains credentials, never commit this
 config.ini
 
 # Qt MOC / UIC generated files (auto-regenerated on build)
 *_autogen/
+# TLS material - never commit private keys or certificates
+*.pem
+*.key
+*.crt
+*.pfx
+*.p12
+certs/
