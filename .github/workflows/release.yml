@@ -1,15 +1,23 @@
-# Builds the installers and publishes them. Runs from the production branch and
-# nowhere else.
+# Builds the installers, and publishes them only from the production branch.
 #
-# That restriction is enforced in three independent places, because "we only publish
-# from production" is the kind of rule that is true until someone clicks the wrong
-# button in the Actions tab:
+# Those are two separate questions, and conflating them deadlocks a pull request.
 #
-#   1. on.push.branches lists only production, so no other push can start this.
-#   2. workflow_dispatch exists for re-running a release, but the `version` job
-#      refuses to run unless the ref really is production — the dispatch button lets
-#      you pick any branch, so trigger filtering alone is not enough.
-#   3. every other job needs `version`, so a refusal there stops the whole run.
+# BUILDING runs on a pull request into production as well as on the push that merges
+# it. Without that, the three packaging jobs can never report a status on the PR, so
+# making them required branch-protection checks leaves the PR waiting forever for a
+# workflow that cannot start until after the merge it is blocking.
+#
+# PUBLISHING runs only on a real push to production. It is enforced in three
+# independent places, because "we only publish from production" is the kind of rule
+# that holds until someone picks the wrong branch from a dropdown:
+#
+#   1. on.push.branches lists only production, so no other push starts this.
+#   2. the `version` job refuses to run unless the ref is production or the pull
+#      request targets it — workflow_dispatch lets you choose any branch, so trigger
+#      filtering alone is not enough, and every other job needs `version`.
+#   3. the `publish` job additionally requires event_name == 'push'. A pull request
+#      therefore builds and verifies the packages and cannot release them, which is
+#      the whole point: the PR proves it packages, the merge ships it.
 #
 # The version comes from project(MyNAS VERSION ...) in CMakeLists.txt. Releasing is
 # therefore: bump that number, merge to production. There is no second place to edit
@@ -19,6 +27,8 @@ name: Release
 
 on:
   push:
+    branches: [production]
+  pull_request:
     branches: [production]
   workflow_dispatch:
 
@@ -36,11 +46,19 @@ jobs:
     outputs:
       version: ${{ steps.read.outputs.version }}
     steps:
-      - name: Refuse to publish from any branch but production
-        if: github.ref != 'refs/heads/production'
+      # Three ways to be legitimately here, and nothing else. On a pull request
+      # github.ref is refs/pull/N/merge, so the branch has to be read from
+      # github.base_ref instead — comparing github.ref would reject every PR.
+      - name: Refuse to run for anything but production
+        if: >-
+          !(
+            (github.event_name == 'push' && github.ref == 'refs/heads/production') ||
+            (github.event_name == 'pull_request' && github.base_ref == 'production') ||
+            (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/production')
+          )
         run: |
-          echo "::error::Releases are published from the production branch only."
-          echo "This run is on ${{ github.ref }}."
+          echo "::error::This workflow is for the production branch only."
+          echo "event=${{ github.event_name }} ref=${{ github.ref }} base=${{ github.base_ref }}"
           exit 1
 
       - uses: actions/checkout@v4
@@ -366,6 +384,16 @@ jobs:
     name: Publish the release
     needs: [version, windows, macos, linux]
     runs-on: ubuntu-latest
+
+    # A pull request builds the three packages and stops here. This is what keeps the
+    # PR able to prove it packages without being able to release anything — the merge
+    # is what ships. Also belt-and-braces against workflow_dispatch: that can be
+    # pointed at a branch, and this only ever fires for a push to production.
+    #
+    # Do NOT make this a required status check. A skipped job reports as skipped
+    # rather than success, so requiring it would reintroduce exactly the deadlock
+    # this `if` exists to avoid.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/production'
 
     # The only job in either workflow that can write to the repository, and it can
     # write exactly one thing: releases.
