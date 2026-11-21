@@ -86,6 +86,18 @@ reporting history.
 
 `.github/workflows/release.yml`. Nothing else triggers it.
 
+`release.yml` runs in two modes, and the difference is the whole design:
+
+| Trigger | Builds packages | Publishes |
+|---|---|---|
+| Pull request into `production` | yes | **no** |
+| Push to `production` (the merge) | yes | yes |
+| `workflow_dispatch` on `production` | yes | yes |
+
+So a pull request proves the thing packages on all three platforms before it is
+allowed in, and the merge is what ships. Everything else is refused by the `version`
+job.
+
 | Platform | Artifact | Built with |
 |---|---|---|
 | Windows 10/11 x64 | `NestDrive-<version>-windows-x64.exe` (NSIS installer) and `.zip` (portable) | `windeployqt` via `cmake --install`, then CPack |
@@ -101,10 +113,15 @@ previous tag.
 the wrong branch from a dropdown. So:
 
 1. `on.push.branches` lists only `production` — no other push can start the workflow.
-2. The `version` job **fails** if `github.ref` is not `refs/heads/production`. This
-   matters because `workflow_dispatch` lets you run a workflow against any branch, so
-   trigger filtering alone is not enough.
+2. The `version` job **fails** unless this is a push to `production`, a pull request
+   whose *base* is `production`, or a dispatch on `production`. `workflow_dispatch`
+   can be aimed at any branch, so trigger filtering alone is not enough. Note it has
+   to read `github.base_ref` for the pull-request case: on a PR `github.ref` is
+   `refs/pull/N/merge`, so comparing it would reject every PR.
 3. Every other job `needs: version`, so that refusal stops the whole run.
+4. The `publish` job additionally requires `event_name == 'push'`. This is what lets
+   a pull request build and verify the packages while being structurally unable to
+   release them.
 
 Only the final `publish` job can write to the repository, and its permission is scoped
 to `contents: write` — enough to create a release, nothing else.
@@ -139,8 +156,11 @@ have already run, which is a slow way to find out.
 
 ### c. Require the checks to pass
 
-**Settings → Branches → Add branch ruleset**, targeting `main`, `develop` and
-`production`. Require a pull request, and require these status checks:
+Two rulesets, because the two branch kinds need different checks. **A check can only
+be required on a branch where the workflow producing it actually runs** — require one
+that cannot report and the pull request waits for it forever.
+
+**Ruleset 1 — targeting `main` and `develop`.** Require a pull request, and:
 
 ```
 Secrets and hygiene
@@ -149,11 +169,38 @@ Windows · x64 · MSVC
 macOS · Apple Silicon · Clang
 ```
 
-Do **not** add *Compiler warnings* — it is advisory and marked
-`continue-on-error`, so it reports success regardless and would only add noise.
+**Ruleset 2 — targeting `production`.** The same four, plus the packaging jobs,
+because the point of the production branch is that it ships:
+
+```
+Secrets and hygiene
+Linux · x86_64 · GCC
+Windows · x64 · MSVC
+macOS · Apple Silicon · Clang
+Read version
+Windows installer
+macOS disk image
+Linux AppImage
+```
+
+Those last four come from `release.yml`, which runs on a pull request into
+`production` as well as on the push that merges it — that is why they can be required
+here and nowhere else.
+
+**Never require these two:**
+
+| Check | Why not |
+|---|---|
+| *Compiler warnings* | Advisory, `continue-on-error: true`. Reports success regardless, so requiring it protects nothing. |
+| *Publish the release* | Skipped on pull requests by design. A skipped job reports as **skipped**, not success, so requiring it deadlocks the PR permanently. |
 
 The check names come from each job's `name:`. Change one in the workflow and the
 ruleset silently stops matching, which looks like protection and is not.
+
+> **If a check sits at "Expected — Waiting for status to be reported" forever**, it is
+> required on a branch where its workflow does not run. That is not a stuck runner and
+> re-running will not clear it; either the trigger has to be widened or the
+> requirement removed.
 
 ---
 
@@ -243,6 +290,25 @@ The likeliest places:
 - **ffmpeg is not bundled.** It is a large dependency with licensing that varies by
   build configuration, and only video features need it — everything else works without
   it. `config.ini.example` documents installing it per platform.
+- **The Linux AppImage carries only the SQLite driver.** Qt ships MySQL, PostgreSQL,
+  ODBC, Oracle, Firebird and Mimer drivers alongside it, each linking a client library
+  for a server this application never speaks to — `src/db/Database.cpp` only ever
+  calls `addDatabase("QSQLITE")`. They are pruned before packaging, which is also the
+  only way linuxdeploy completes: it treats any plugin's missing dependency as fatal.
+- **The Linux AppImage has no TIFF support.** Qt 6.10's prebuilt Linux binaries are
+  built on Ubuntu 22.04 and its TIFF plugin links `libtiff.so.5`; `ubuntu-latest` is
+  24.04, which ships `libtiff.so.6` and has no `libtiff5` package at all. The plugin
+  is removed before packaging, because a missing dependency is fatal to linuxdeploy.
+
+  TIFF photos still list, download and open normally — only the thumbnail is missing,
+  by the same path a machine without ffmpeg takes for video.
+
+  The alternatives were both worse. Pinning `ubuntu-22.04` works today and fails
+  outright the day GitHub retires the label. Symlinking `libtiff.so.5` to `.so.6`
+  would load a plugin against an ABI it was not built for, trading a build failure
+  for a crash in front of a user. If TIFF thumbnails become worth having on Linux,
+  the real fix is building Qt from source against 24.04, which is a much larger
+  undertaking than the feature justifies.
 - **`cert.pem` and `key.pem` are not packaged.** Shipping one private key to every
   downloader would mean every install shared it, which is worse than no certificate
   because it looks like encryption and is not. A fresh install serves plain HTTP on
@@ -362,16 +428,82 @@ asserts the **Qt runtime** landed, not just the binary. Matched by substring, si
 whether Qt arrives as `QtCore.framework` or `libQt6Core.6.dylib` is a property of the
 Qt build and not something this project should assert a spelling for.
 
+### f. The Linux package would not assemble — Qt plugins for software nobody installed
+
+Found by the first `production` run, in `release.yml` rather than in `ci.yml` —
+`ci.yml` stops at `cmake --install`, and this only happens when linuxdeploy walks the
+Qt plugin tree. **linuxdeploy's Qt plugin deploys every plugin in a module's
+directory and treats any one missing dependency as fatal to the whole run.**
+
+`libqtiff.so` wants `libtiff.so.5`; `ubuntu-latest` has `.so.6` and packages no
+`libtiff5`. See §6 for that one, which is a genuine feature loss.
+
+**The first fix was too narrow, and that is the lesson.** It deleted `libqtiff.so` and
+nothing else — a fix for the failure in front of it rather than for the reason the
+failure existed. The next run failed on `libqsqlmysql.so` wanting
+`libmysqlclient.so.21`, and behind that sat the PostgreSQL, ODBC, Oracle, Firebird and
+Mimer drivers with exactly the same problem each. One CI round per driver is not a
+strategy; the second attempt would have been the first of six.
+
+The general shape, once stated, answers all of them at once: **Qt ships plugins for
+software that is not installed and that this application would never speak to.**
+`src/db/Database.cpp` only ever calls `addDatabase("QSQLITE")` — there is no code path
+to any other backend — so every other driver is pruned before deployment. That is not
+a workaround; a MySQL client library in the package would be weight that could never
+be used.
+
+Worth separating the two cases, because they are not the same kind of thing:
+
+| Removed | Why | Cost |
+|---|---|---|
+| Every SQL driver but SQLite | The application cannot use them | none |
+| `libqtiff.so` | Its dependency is unavailable on 24.04 | TIFF thumbnails |
+
+The step now prints the plugin set that survives, so a future missing dependency can
+be read against what was actually offered instead of guessed at.
+
+The same log also showed a mistake of mine that had been silently doing nothing:
+
+```
+WARNING: Using deprecated EXTRA_QT_PLUGINS env var (renamed to EXTRA_QT_MODULES)
+Found Qt modules: core dbus gui network sql widgets
+Extra Qt modules:
+```
+
+`EXTRA_QT_PLUGINS="sqldrivers;imageformats"` was wrong twice: the variable had been
+renamed, and it takes Qt *module* names, not plugin directory names. It resolved to
+nothing — and it had never been needed, because the plugin reads the modules off the
+binary and `sqldrivers` comes with `sql`, `imageformats` with `gui`. Naming them again
+created something to get wrong and nothing to gain. Removed.
+
+**Two checks were added as a result**, because the thing that nearly shipped here was
+not the TIFF plugin but the absence of any test that the package works:
+
+- a static assertion that the platform, SQLite and WebP plugins are in the AppDir
+- a **smoke test that actually runs the AppImage** under `xvfb` and requires it to
+  still be alive twelve seconds later
+
+`xvfb` rather than `QT_QPA_PLATFORM=offscreen` is deliberate. Offscreen skips the
+`xcb` platform plugin, which is the single most likely thing to be missing a
+dependency — so an offscreen run would happily pass a package no real desktop could
+start.
 ### The pattern
 
-Four of the five are the same mistake in different clothes: **code that is correct
+Four of the six are the same mistake in different clothes: **code that is correct
 assumed its environment was the only environment.** A path form, an installed plugin,
-an available header, a default that depends on a call the project never makes.
+an available header, a shared library's soname.
 
-The fifth, (e), is a different and more uncomfortable lesson: **a gate that only
-checks for the thing it expects to find will pass a build that is missing everything
-else.** It is worth asking of any new check what a broken result would look like, and
-whether the check could tell the difference.
+The other two, (e) and (f), are a different and more uncomfortable lesson: **a gate
+that only checks for the thing it expects to find will pass a build that is missing
+everything else.** Both were caught by a human reading a log, not by a check — (e)
+because the install step emitted a note and exited 0, (f) because a deprecated
+environment variable had been doing nothing for weeks and said so in a line nobody
+had read.
+
+So it is worth asking of any new check what a *broken* result would look like, and
+whether the check could tell the difference. That question is what produced the
+AppImage smoke test, which is the only thing in either workflow that proves the
+product runs rather than that it assembled.
 
 Together with §7's Tailscale case, the rule generalises:
 
@@ -379,6 +511,7 @@ Together with §7's Tailscale case, the rule generalises:
 > to expect, or it is measuring the machine rather than the code.
 
 And the corollary, which is the one that costs real time: **when CI and a developer
-machine disagree, neither is automatically right.** Twice here the developer machine
-was wrong (b and e); twice CI was testing something the author never intended to
-assert (c and d).
+machine disagree, neither is automatically right.** Three times here the developer
+machine was wrong (b, e and f); twice CI was testing something the author never
+intended to assert (c and d).
+
