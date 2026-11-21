@@ -86,6 +86,18 @@ reporting history.
 
 `.github/workflows/release.yml`. Nothing else triggers it.
 
+`release.yml` runs in two modes, and the difference is the whole design:
+
+| Trigger | Builds packages | Publishes |
+|---|---|---|
+| Pull request into `production` | yes | **no** |
+| Push to `production` (the merge) | yes | yes |
+| `workflow_dispatch` on `production` | yes | yes |
+
+So a pull request proves the thing packages on all three platforms before it is
+allowed in, and the merge is what ships. Everything else is refused by the `version`
+job.
+
 | Platform | Artifact | Built with |
 |---|---|---|
 | Windows 10/11 x64 | `NestDrive-<version>-windows-x64.exe` (NSIS installer) and `.zip` (portable) | `windeployqt` via `cmake --install`, then CPack |
@@ -101,10 +113,15 @@ previous tag.
 the wrong branch from a dropdown. So:
 
 1. `on.push.branches` lists only `production` — no other push can start the workflow.
-2. The `version` job **fails** if `github.ref` is not `refs/heads/production`. This
-   matters because `workflow_dispatch` lets you run a workflow against any branch, so
-   trigger filtering alone is not enough.
+2. The `version` job **fails** unless this is a push to `production`, a pull request
+   whose *base* is `production`, or a dispatch on `production`. `workflow_dispatch`
+   can be aimed at any branch, so trigger filtering alone is not enough. Note it has
+   to read `github.base_ref` for the pull-request case: on a PR `github.ref` is
+   `refs/pull/N/merge`, so comparing it would reject every PR.
 3. Every other job `needs: version`, so that refusal stops the whole run.
+4. The `publish` job additionally requires `event_name == 'push'`. This is what lets
+   a pull request build and verify the packages while being structurally unable to
+   release them.
 
 Only the final `publish` job can write to the repository, and its permission is scoped
 to `contents: write` — enough to create a release, nothing else.
@@ -139,8 +156,11 @@ have already run, which is a slow way to find out.
 
 ### c. Require the checks to pass
 
-**Settings → Branches → Add branch ruleset**, targeting `main`, `develop` and
-`production`. Require a pull request, and require these status checks:
+Two rulesets, because the two branch kinds need different checks. **A check can only
+be required on a branch where the workflow producing it actually runs** — require one
+that cannot report and the pull request waits for it forever.
+
+**Ruleset 1 — targeting `main` and `develop`.** Require a pull request, and:
 
 ```
 Secrets and hygiene
@@ -149,11 +169,38 @@ Windows · x64 · MSVC
 macOS · Apple Silicon · Clang
 ```
 
-Do **not** add *Compiler warnings* — it is advisory and marked
-`continue-on-error`, so it reports success regardless and would only add noise.
+**Ruleset 2 — targeting `production`.** The same four, plus the packaging jobs,
+because the point of the production branch is that it ships:
+
+```
+Secrets and hygiene
+Linux · x86_64 · GCC
+Windows · x64 · MSVC
+macOS · Apple Silicon · Clang
+Read version
+Windows installer
+macOS disk image
+Linux AppImage
+```
+
+Those last four come from `release.yml`, which runs on a pull request into
+`production` as well as on the push that merges it — that is why they can be required
+here and nowhere else.
+
+**Never require these two:**
+
+| Check | Why not |
+|---|---|
+| *Compiler warnings* | Advisory, `continue-on-error: true`. Reports success regardless, so requiring it protects nothing. |
+| *Publish the release* | Skipped on pull requests by design. A skipped job reports as **skipped**, not success, so requiring it deadlocks the PR permanently. |
 
 The check names come from each job's `name:`. Change one in the workflow and the
 ruleset silently stops matching, which looks like protection and is not.
+
+> **If a check sits at "Expected — Waiting for status to be reported" forever**, it is
+> required on a branch where its workflow does not run. That is not a stuck runner and
+> re-running will not clear it; either the trigger has to be widened or the
+> requirement removed.
 
 ---
 
