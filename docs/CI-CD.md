@@ -243,6 +243,20 @@ The likeliest places:
 - **ffmpeg is not bundled.** It is a large dependency with licensing that varies by
   build configuration, and only video features need it — everything else works without
   it. `config.ini.example` documents installing it per platform.
+- **The Linux AppImage has no TIFF support.** Qt 6.10's prebuilt Linux binaries are
+  built on Ubuntu 22.04 and its TIFF plugin links `libtiff.so.5`; `ubuntu-latest` is
+  24.04, which ships `libtiff.so.6` and has no `libtiff5` package at all. The plugin
+  is removed before packaging, because a missing dependency is fatal to linuxdeploy.
+
+  TIFF photos still list, download and open normally — only the thumbnail is missing,
+  by the same path a machine without ffmpeg takes for video.
+
+  The alternatives were both worse. Pinning `ubuntu-22.04` works today and fails
+  outright the day GitHub retires the label. Symlinking `libtiff.so.5` to `.so.6`
+  would load a plugin against an ABI it was not built for, trading a build failure
+  for a crash in front of a user. If TIFF thumbnails become worth having on Linux,
+  the real fix is building Qt from source against 24.04, which is a much larger
+  undertaking than the feature justifies.
 - **`cert.pem` and `key.pem` are not packaged.** Shipping one private key to every
   downloader would mean every install shared it, which is worse than no certificate
   because it looks like encryption and is not. A fresh install serves plain HTTP on
@@ -362,16 +376,55 @@ asserts the **Qt runtime** landed, not just the binary. Matched by substring, si
 whether Qt arrives as `QtCore.framework` or `libQt6Core.6.dylib` is a property of the
 Qt build and not something this project should assert a spelling for.
 
+### f. The Linux package would not assemble — Qt's TIFF plugin
+
+Found by the first `production` run, in `release.yml` rather than in `ci.yml` — `ci.yml`
+stops at `cmake --install`, and this only happens when linuxdeploy walks the Qt plugin
+tree. `libqtiff.so` wants `libtiff.so.5`; `ubuntu-latest` has `.so.6` and no `libtiff5`
+package. See §6 for the fix and why the two obvious alternatives are worse.
+
+The same log also showed a mistake of mine that had been silently doing nothing:
+
+```
+WARNING: Using deprecated EXTRA_QT_PLUGINS env var (renamed to EXTRA_QT_MODULES)
+Found Qt modules: core dbus gui network sql widgets
+Extra Qt modules:
+```
+
+`EXTRA_QT_PLUGINS="sqldrivers;imageformats"` was wrong twice: the variable had been
+renamed, and it takes Qt *module* names, not plugin directory names. It resolved to
+nothing — and it had never been needed, because the plugin reads the modules off the
+binary and `sqldrivers` comes with `sql`, `imageformats` with `gui`. Naming them again
+created something to get wrong and nothing to gain. Removed.
+
+**Two checks were added as a result**, because the thing that nearly shipped here was
+not the TIFF plugin but the absence of any test that the package works:
+
+- a static assertion that the platform, SQLite and WebP plugins are in the AppDir
+- a **smoke test that actually runs the AppImage** under `xvfb` and requires it to
+  still be alive twelve seconds later
+
+`xvfb` rather than `QT_QPA_PLATFORM=offscreen` is deliberate. Offscreen skips the
+`xcb` platform plugin, which is the single most likely thing to be missing a
+dependency — so an offscreen run would happily pass a package no real desktop could
+start.
 ### The pattern
 
-Four of the five are the same mistake in different clothes: **code that is correct
+Four of the six are the same mistake in different clothes: **code that is correct
 assumed its environment was the only environment.** A path form, an installed plugin,
-an available header, a default that depends on a call the project never makes.
+an available header, a shared library's soname.
 
-The fifth, (e), is a different and more uncomfortable lesson: **a gate that only
-checks for the thing it expects to find will pass a build that is missing everything
-else.** It is worth asking of any new check what a broken result would look like, and
-whether the check could tell the difference.
+The other two, (e) and (f), are a different and more uncomfortable lesson: **a gate
+that only checks for the thing it expects to find will pass a build that is missing
+everything else.** Both were caught by a human reading a log, not by a check — (e)
+because the install step emitted a note and exited 0, (f) because a deprecated
+environment variable had been doing nothing for weeks and said so in a line nobody
+had read.
+
+So it is worth asking of any new check what a *broken* result would look like, and
+whether the check could tell the difference. That question is what produced the
+AppImage smoke test, which is the only thing in either workflow that proves the
+product runs rather than that it assembled.
 
 Together with §7's Tailscale case, the rule generalises:
 
@@ -379,6 +432,7 @@ Together with §7's Tailscale case, the rule generalises:
 > to expect, or it is measuring the machine rather than the code.
 
 And the corollary, which is the one that costs real time: **when CI and a developer
-machine disagree, neither is automatically right.** Twice here the developer machine
-was wrong (b and e); twice CI was testing something the author never intended to
-assert (c and d).
+machine disagree, neither is automatically right.** Three times here the developer
+machine was wrong (b, e and f); twice CI was testing something the author never
+intended to assert (c and d).
+

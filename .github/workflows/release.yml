@@ -203,7 +203,8 @@ jobs:
             libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-image0 \
             libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 libxcb-shape0 \
             libxcb-xinerama0 libxcb-xfixes0 \
-            libfontconfig1 libfreetype6 file
+            libfontconfig1 libfreetype6 file \
+            libopenjp2-7 libheif1 xvfb
 
       - uses: lukka/get-cmake@latest
 
@@ -225,13 +226,44 @@ jobs:
       - name: Lay out the AppDir
         run: cmake --install build --prefix "$PWD/AppDir/usr"
 
+      # Qt 6.10's prebuilt Linux binaries are built on Ubuntu 22.04, and its TIFF
+      # image plugin links libtiff.so.5. ubuntu-latest is 24.04, which ships
+      # libtiff.so.6 — a different soname, and libtiff5 is not packaged for 24.04 at
+      # all, so there is nothing to install. linuxdeploy treats the missing
+      # dependency as fatal and fails the whole run on it.
+      #
+      # Dropping the one plugin is the fix that does not depend on a runner label.
+      # The alternatives are worse: pinning ubuntu-22.04 works today but fails
+      # outright whenever GitHub retires the label, and faking libtiff.so.5 as a
+      # symlink to .so.6 would load a plugin against an ABI it was not built for,
+      # trading a build failure for a crash in front of a user.
+      #
+      # The cost is that TIFF photos get no thumbnail in the Linux AppImage. They
+      # still list, download and play normally: ThumbnailCache already treats a
+      # format Qt cannot read as simply not offered, which is the same path a machine
+      # without ffmpeg takes for video. Noted in docs/CI-CD.md.
+      - name: Drop the TIFF plugin, which needs a library 24.04 does not have
+        run: |
+          plugin="$QT_ROOT_DIR/plugins/imageformats/libqtiff.so"
+          if [ -f "$plugin" ]; then
+            rm -f "$plugin"
+            echo "Removed $plugin"
+          else
+            echo "No TIFF plugin present; nothing to do."
+          fi
+
       - name: Build the AppImage
         env:
-          # The plugin deploys the QPA plugin and the ones it can infer from linked
-          # modules. These two it cannot infer, and both fail invisibly: without
-          # sqldrivers Qt6::Sql loads with no SQLite driver and the database never
-          # opens, and without imageformats thumbnails silently stop being WebP.
-          EXTRA_QT_PLUGINS: "sqldrivers;imageformats"
+          # Deliberately no EXTRA_QT_MODULES. An earlier version set
+          # EXTRA_QT_PLUGINS="sqldrivers;imageformats", which was wrong twice over:
+          # the variable was renamed to EXTRA_QT_MODULES, and it takes Qt *module*
+          # names rather than plugin directory names. It resolved to nothing and the
+          # log said so — "Extra Qt modules:" followed by a blank.
+          #
+          # It was also unnecessary. The plugin reads the modules off the binary:
+          # "Found Qt modules: core dbus gui network sql widgets". sqldrivers comes
+          # with sql and imageformats with gui, so both were always being deployed.
+          # Naming them again only created something to get wrong.
 
           # Runs the tools by unpacking them instead of mounting them. GitHub's
           # runners have no FUSE, so a type-2 AppImage cannot mount itself here —
@@ -267,6 +299,61 @@ jobs:
           mv ./*.AppImage "out/NestDrive-${VERSION}-linux-x86_64.AppImage"
           chmod +x out/*.AppImage
           ls -la out
+
+      # Static checks on what was bundled. Cheap, and they fail for exactly one
+      # reason, which is what makes them worth having next to the smoke test below.
+      #
+      # The SQLite driver is the one that matters most: without it the application
+      # starts normally, Qt6::Sql loads with no driver, and the database silently
+      # never opens — so thumbnails and accounts do not work and nothing says why.
+      - name: Check the AppDir has its plugins
+        run: |
+          echo "── Qt plugins in the AppDir ──"
+          find AppDir/usr/plugins -maxdepth 2 -type d | sort
+
+          test -f AppDir/usr/plugins/platforms/libqxcb.so
+          ls AppDir/usr/plugins/sqldrivers | grep -q sqlite
+          ls AppDir/usr/plugins/imageformats | grep -q webp
+          echo "Platform, SQLite and WebP plugins are all present."
+
+      # The first time this application has ever been run on Linux by anything.
+      #
+      # Everything above proves the file was assembled; none of it proves the result
+      # executes. A missing library or an unloadable plugin shows up here and nowhere
+      # else, and the alternative place to discover it is on a stranger's machine.
+      #
+      # xvfb rather than QT_QPA_PLATFORM=offscreen on purpose: offscreen would skip
+      # the xcb platform plugin, which is the single most likely thing to be missing
+      # a dependency, and so would pass a build no real desktop could start.
+      - name: Smoke-test the AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        run: |
+          app="out/NestDrive-${VERSION}-linux-x86_64.AppImage"
+
+          set +e
+          xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            "$app" > smoke.log 2>&1 &
+          pid=$!
+          sleep 12
+
+          if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid" 2>/dev/null
+            status=0
+            echo "✅ The AppImage started and was still running after 12 seconds."
+          else
+            wait "$pid"
+            echo "❌ The AppImage exited on its own (code $?) instead of staying up."
+            echo "   If the output below mentions the system tray or a platform"
+            echo "   plugin, the cause is this bare X server rather than the package."
+            status=1
+          fi
+          set -e
+
+          echo "── application output ──"
+          cat smoke.log || true
+
+          exit "$status"
 
       - uses: actions/upload-artifact@v4
         with:

@@ -112,7 +112,7 @@ page. Nothing needs to be built.
 |---|---|---|
 | **Windows 10/11 (x64)** | `NestDrive-<version>-windows-x64.exe` | Installer. A portable `.zip` is published alongside it. SmartScreen warns because the binary is unsigned — **More info → Run anyway**. |
 | **macOS (Apple Silicon)** | `NestDrive-<version>-macos-arm64.dmg` | Open it and drag NestDrive to Applications. First launch: **right-click → Open**, once. |
-| **Linux (x86_64)** | `NestDrive-<version>-linux-x86_64.AppImage` | `chmod +x` and run. No installation. |
+| **Linux (x86_64)** | `NestDrive-<version>-linux-x86_64.AppImage` | `chmod +x` and run. No installation. TIFF photos get no thumbnail — see [docs/CI-CD.md §6](docs/CI-CD.md). |
 
 Video features need `ffmpeg` on `PATH`; photos, browsing and sharing work without it.
 Reaching your library from outside the house is set up in the app under
