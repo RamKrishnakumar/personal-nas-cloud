@@ -260,15 +260,56 @@ jobs:
       # still list, download and play normally: ThumbnailCache already treats a
       # format Qt cannot read as simply not offered, which is the same path a machine
       # without ffmpeg takes for video. Noted in docs/CI-CD.md.
-      - name: Drop the TIFF plugin, which needs a library 24.04 does not have
+      # linuxdeploy's Qt plugin deploys every plugin in a module's directory, and
+      # treats any plugin's missing dependency as fatal to the whole run. Qt ships
+      # drivers for software that is not installed here and that this application
+      # would never speak to, so those dependencies cannot be satisfied and should
+      # not be.
+      #
+      # Removing the plugins is the fix rather than installing the libraries. An
+      # earlier version of this step deleted only libqtiff.so, which was treating the
+      # symptom: the next run failed on libqsqlmysql.so wanting libmysqlclient.so.21,
+      # and behind that sit the PostgreSQL, ODBC, Oracle, Firebird and Mimer drivers
+      # with the same problem each. Chasing them one per CI round is not a strategy.
+      - name: Prune Qt plugins this application cannot use
         run: |
-          plugin="$QT_ROOT_DIR/plugins/imageformats/libqtiff.so"
-          if [ -f "$plugin" ]; then
-            rm -f "$plugin"
-            echo "Removed $plugin"
-          else
-            echo "No TIFF plugin present; nothing to do."
+          plugins="$QT_ROOT_DIR/plugins"
+
+          # ── SQL drivers: keep SQLite, drop the rest ───────────────────────────
+          # Not a workaround. src/db/Database.cpp only ever calls
+          # addDatabase("QSQLITE") and checks isDriverAvailable("QSQLITE"); there is
+          # no code path to any other backend, so a MySQL or Oracle client library in
+          # the package would be weight that can never be used.
+          keep="libqsqlite.so"
+          echo "── sqldrivers ──"
+          for driver in "$plugins"/sqldrivers/*.so; do
+            [ -e "$driver" ] || continue
+            name=$(basename "$driver")
+            if [ "$name" = "$keep" ]; then
+              echo "  keeping $name"
+            else
+              echo "  removing $name"
+              rm -f "$driver"
+            fi
+          done
+
+          # ── TIFF: cannot be satisfied on this runner ──────────────────────────
+          # Qt 6.10's Linux binaries are built on Ubuntu 22.04 and this plugin links
+          # libtiff.so.5; ubuntu-latest is 24.04, which ships .so.6 and packages no
+          # libtiff5 at all. Unlike the drivers above this one is a real loss — TIFF
+          # photos get no thumbnail — so it is recorded in docs/CI-CD.md §6 rather
+          # than treated as housekeeping.
+          echo "── imageformats ──"
+          if rm -f "$plugins/imageformats/libqtiff.so"; then
+            echo "  removed libqtiff.so (needs libtiff.so.5)"
           fi
+
+          # Printed so that the next missing dependency can be read against the set
+          # that was actually offered for deployment, instead of being guessed at.
+          echo "── remaining sqldrivers ──"
+          ls "$plugins/sqldrivers" || true
+          echo "── remaining imageformats ──"
+          ls "$plugins/imageformats" || true
 
       - name: Build the AppImage
         env:

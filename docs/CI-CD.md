@@ -290,6 +290,11 @@ The likeliest places:
 - **ffmpeg is not bundled.** It is a large dependency with licensing that varies by
   build configuration, and only video features need it — everything else works without
   it. `config.ini.example` documents installing it per platform.
+- **The Linux AppImage carries only the SQLite driver.** Qt ships MySQL, PostgreSQL,
+  ODBC, Oracle, Firebird and Mimer drivers alongside it, each linking a client library
+  for a server this application never speaks to — `src/db/Database.cpp` only ever
+  calls `addDatabase("QSQLITE")`. They are pruned before packaging, which is also the
+  only way linuxdeploy completes: it treats any plugin's missing dependency as fatal.
 - **The Linux AppImage has no TIFF support.** Qt 6.10's prebuilt Linux binaries are
   built on Ubuntu 22.04 and its TIFF plugin links `libtiff.so.5`; `ubuntu-latest` is
   24.04, which ships `libtiff.so.6` and has no `libtiff5` package at all. The plugin
@@ -423,12 +428,39 @@ asserts the **Qt runtime** landed, not just the binary. Matched by substring, si
 whether Qt arrives as `QtCore.framework` or `libQt6Core.6.dylib` is a property of the
 Qt build and not something this project should assert a spelling for.
 
-### f. The Linux package would not assemble — Qt's TIFF plugin
+### f. The Linux package would not assemble — Qt plugins for software nobody installed
 
-Found by the first `production` run, in `release.yml` rather than in `ci.yml` — `ci.yml`
-stops at `cmake --install`, and this only happens when linuxdeploy walks the Qt plugin
-tree. `libqtiff.so` wants `libtiff.so.5`; `ubuntu-latest` has `.so.6` and no `libtiff5`
-package. See §6 for the fix and why the two obvious alternatives are worse.
+Found by the first `production` run, in `release.yml` rather than in `ci.yml` —
+`ci.yml` stops at `cmake --install`, and this only happens when linuxdeploy walks the
+Qt plugin tree. **linuxdeploy's Qt plugin deploys every plugin in a module's
+directory and treats any one missing dependency as fatal to the whole run.**
+
+`libqtiff.so` wants `libtiff.so.5`; `ubuntu-latest` has `.so.6` and packages no
+`libtiff5`. See §6 for that one, which is a genuine feature loss.
+
+**The first fix was too narrow, and that is the lesson.** It deleted `libqtiff.so` and
+nothing else — a fix for the failure in front of it rather than for the reason the
+failure existed. The next run failed on `libqsqlmysql.so` wanting
+`libmysqlclient.so.21`, and behind that sat the PostgreSQL, ODBC, Oracle, Firebird and
+Mimer drivers with exactly the same problem each. One CI round per driver is not a
+strategy; the second attempt would have been the first of six.
+
+The general shape, once stated, answers all of them at once: **Qt ships plugins for
+software that is not installed and that this application would never speak to.**
+`src/db/Database.cpp` only ever calls `addDatabase("QSQLITE")` — there is no code path
+to any other backend — so every other driver is pruned before deployment. That is not
+a workaround; a MySQL client library in the package would be weight that could never
+be used.
+
+Worth separating the two cases, because they are not the same kind of thing:
+
+| Removed | Why | Cost |
+|---|---|---|
+| Every SQL driver but SQLite | The application cannot use them | none |
+| `libqtiff.so` | Its dependency is unavailable on 24.04 | TIFF thumbnails |
+
+The step now prints the plugin set that survives, so a future missing dependency can
+be read against what was actually offered instead of guessed at.
 
 The same log also showed a mistake of mine that had been silently doing nothing:
 
