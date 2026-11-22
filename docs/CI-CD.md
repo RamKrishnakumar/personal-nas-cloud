@@ -126,12 +126,50 @@ the wrong branch from a dropdown. So:
 Only the final `publish` job can write to the repository, and its permission is scoped
 to `contents: write` — enough to create a release, nothing else.
 
-### The version is in one place
+### The version is calculated, not written down
 
-`project(MyNAS VERSION 0.6.0 ...)` in `CMakeLists.txt`. The workflow greps that line.
+Nobody edits a version number. `scripts/next-version.sh` takes the last `v*` tag as
+the baseline and reads the Conventional Commits since it:
 
-Releasing is therefore: **bump that number, merge to `production`.** There is no
-version to type into a web form, so the tag cannot disagree with the binary.
+| Commit | Effect | Example |
+|---|---|---|
+| `feat:` | minor | 0.6.0 → 0.7.0 |
+| `fix:` `perf:` | patch | 0.6.0 → 0.6.1 |
+| `feat!:` or a `BREAKING CHANGE:` footer | major — **but see below** | 1.2.0 → 2.0.0 |
+| `chore:` `docs:` `ci:` `refactor:` `test:` `style:` `build:` | none | |
+
+**Below 1.0 a breaking change bumps the minor, not the major.** `0.x` means the
+interface is not being promised yet, and letting one `feat!:` jump straight to 1.0.0
+would announce a stability nobody decided on.
+
+**Commits with nothing conventional to go on still produce a patch.** Not every commit
+in this repository is written in conventional form — *"fix the path to the
+application"* reads like a fix and parses as nothing — and a release that reused the
+published version would overwrite the existing one instead of making a new one.
+
+### Why there is nothing to merge back
+
+The version lives in **tags**, and a tag belongs to a commit rather than to a branch.
+Every branch containing the commit therefore already agrees about the version, with no
+synchronising step at all.
+
+Had the number stayed in `CMakeLists.txt` it would have to be edited, committed to
+`production`, and then merged into `main` and `develop` to stop them disagreeing —
+pushes to protected branches, from a workflow, racing whatever else is in flight. That
+whole mechanism is not automated here; it is **deleted**.
+
+`CMakeLists.txt` takes the version from, in order:
+
+1. `-DNESTDRIVE_VERSION=X.Y.Z`, which the release workflow passes. The build has to be
+   told, because the tag for the version being built does not exist yet — it is
+   created only once publishing succeeds, which is what makes the number conditional
+   on a successful deploy.
+2. `git describe --tags`, so any ordinary clone — including one opened in Qt Creator —
+   reports the release it descends from.
+3. `NESTDRIVE_FALLBACK_VERSION`, for a source download with no `.git`. A floor, not a
+   statement about what is released.
+
+Releasing is therefore: **merge to `production`.** Nothing else.
 
 ---
 
@@ -206,23 +244,38 @@ ruleset silently stops matching, which looks like protection and is not.
 
 ## 4. Cutting a release
 
-```sh
-# 1. Bump the version in CMakeLists.txt, e.g. 0.6.0 → 0.6.1
-# 2. Commit it on main
-git commit -am "chore: release 0.6.1"
-git push
+Open a pull request from `main` into `production` and merge it. That is the whole
+procedure — there is no version to decide and no file to edit.
 
-# 3. Merge main into production
-git checkout production
-git merge --ff-only main
-git push
+The pull request builds all three packages without publishing anything, so the
+required checks tell you it packages before it is merged. Merging then publishes, and
+only then is the tag created.
+
+**To know what the version will be before you merge**, read it off the run: the
+`Read version` job writes the previous and next numbers to the workflow summary, with
+the reasoning. Or ask locally:
+
+```sh
+sh scripts/next-version.sh --explain
 ```
 
-That push builds all three packages and publishes them as release `v0.6.1`.
+which prints its verdict on every commit it considered, including the ones it ignored.
 
-Re-running on the same version replaces the files on the existing release rather than
-failing, so a release that broke on one platform can be fixed and re-run without
-inventing a version number nobody asked for.
+### Controlling the number
+
+Through the commit messages, which is the point. If a release should be a minor rather
+than a patch, the work needs a `feat:` commit in it; if a `fix:` is really a feature,
+say so when committing rather than correcting a version afterwards.
+
+### Re-running a failed release
+
+`workflow_dispatch` on `production`. Because the version comes from the tags, a run
+that failed before publishing left no tag behind, so the recalculated version is the
+same one — the re-run is genuinely a retry rather than a new number.
+
+If a run failed *after* publishing, the tag exists and the next calculation moves past
+it. Uploading to the existing release is still handled (`--clobber`), so a partial
+release can be completed by hand without inventing a version nobody asked for.
 
 ---
 
@@ -234,7 +287,7 @@ this is worth being plain about rather than discovering through a support questi
 | Platform | What the user sees | How they get past it |
 |---|---|---|
 | Windows | SmartScreen: "Windows protected your PC" | **More info → Run anyway** |
-| macOS | "cannot be opened because the developer cannot be verified" | **Right-click → Open**, once |
+| macOS | "is not verified", offering only **Move to Bin** | **System Settings → Privacy & Security → Open Anyway** |
 | Linux | nothing — AppImages are not gatekept | `chmod +x` and run |
 
 There is one signature in the pipeline, and it is doing a different job. The macOS
@@ -242,6 +295,13 @@ build runs `codesign --sign -`, an **ad-hoc** signature that proves nothing abou
 built it. It is there because on Apple Silicon the kernel refuses to execute an arm64
 binary with no valid signature at all. It has to run *after* `macdeployqt`, which
 rewrites every rpath in the bundle and invalidates whatever the linker left behind.
+
+**The right-click → Open workaround no longer exists.** It was documented here and in
+the README and it was wrong: Apple removed that path for unsigned applications in
+macOS 15, and on macOS 26 the first dialog offers only *Move to Bin*. The route now is
+**System Settings → Privacy & Security → Open Anyway**, which appears only after the
+launch has been refused once. Anyone told to right-click will conclude the download is
+broken, so this correction matters more than it looks.
 
 Removing the warnings entirely costs money and is not a code change:
 

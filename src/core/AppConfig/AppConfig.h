@@ -56,6 +56,26 @@ public:
     bool     useTailscaleCert() const;
 
     /**
+     * @brief Where the certificate Tailscale issues is kept. NestDrive owns these.
+     *
+     * Separate from certPath() and keyPath() on purpose, and the separation is what
+     * lets HTTPS be automatic on the Tailscale path.
+     *
+     * Those two belong to the owner: on a public IP they are obtained with win-acme
+     * or similar, which installs its own renewal task. Writing a Tailscale
+     * certificate over them would undo that setup, so for a long time the code
+     * refused to request one at all unless useHttps was explicitly turned on — which
+     * left every fresh install serving plain HTTP, because nobody edits an INI file
+     * they have not been told about.
+     *
+     * With its own pair of files there is nothing to overwrite and nothing to ask.
+     * A `.ts.net` certificate is only valid for a name Tailscale controls, so it can
+     * never collide with the owner's own domain either.
+     */
+    QString  tailscaleCertPath() const;
+    QString  tailscaleKeyPath()  const;
+
+    /**
      * @brief Path to the tailscale binary, or empty to search the usual places.
      *
      * Empty is the normal setting, with the same contract as ffmpegPath(): beside

@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  NestDrive menu-bar icon for macOS.
+
+  The same mark as NestDrive-without-squareshape.svg, in one colour and squared.
+  Two reasons it cannot be the application icon:
+
+  A macOS menu-bar icon is a *template image*: pure shape in a single colour, which
+  the system recolours itself — dark on a light menu bar, light on a dark one, and
+  inverted again while the menu is open. Supplying colour artwork there defeats that,
+  so it stays the wrong colour in one of the two themes. QIcon::setIsMask(true) is
+  what tells Qt to hand this to macOS as a template.
+
+  It is also drawn at roughly 18px. The full icon's concentric arcs merge into a smear
+  at that size, so this uses the bare mark with its background removed, which keeps a
+  readable silhouette.
+
+  Black on transparent is correct for a template image — the colour is discarded and
+  only coverage is kept, so this being invisible on a dark background in a previewer
+  says nothing about how it renders. Windows and Linux use the full colour icon in the
+  tray instead, because there the icon is drawn as given and its own dark background
+  is what keeps it legible on any taskbar.
+
+  Squared by padding 278x259 to 278x278, art shifted 9.5px down, proportions intact.
+-->
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="278" height="278" viewBox="0 0 278 278" fill="none">
+
+  <g transform="translate(0 9.5)" fill="#000000">
+    <path d="M91.2501 218.25V131C91.2501 124.667 94.0834 121.5 99.7501 121.5C102.25 121.5 104.833 122.833 107.5 125.5L169.5 190V121.75H186.25V209C186.25 215.333 183.333 218.5 177.5 218.5C174.833 218.5 172.167 217.167 169.5 214.5L108 150.5V218.25H91.2501Z"/>
+    <path d="M12.2501 241.75H108.25C109.25 245.917 111.917 248 116.25 248H161.75C166.083 248 168.75 245.917 169.75 241.75H265.75C265.75 253.25 260 259 248.5 259H29.5001C18.0001 259 12.2501 253.25 12.2501 241.75Z"/>
+    <path d="M44.2023 37.3418C69.9361 13.3446 103.813 0 139 0C174.187 0 208.064 13.3446 233.798 37.3418L222.204 49.7748C199.617 28.7125 169.883 17 139 17C108.117 17 78.3828 28.7125 55.7962 49.7748L44.2023 37.3418Z"/>
+    <path d="M219.75 76.5L207.25 88.25C209.75 91.4167 212 94.8333 214 98.5H196.25L182.75 112H220.25C225.75 128.5 224.25 144.5 224.25 164V231.75H241V150.5C241 119.5 239 102 219.75 76.5Z"/>
+    <path d="M58.2501 76.5L70.7501 88.25C68.2501 91.4167 66.0001 94.8333 64.0001 98.5H81.7501L95.2501 112H57.7501C52.2501 128.5 53.7501 144.5 53.7501 164V231.75H37.0001V150.5C37.0001 119.5 39.0001 102 58.2501 76.5Z"/>
+    <path d="M245.48 49.6525C265.5 73.5116 276.927 103.403 277.928 134.533C278.929 165.663 269.446 196.227 251 221.323V187.374C259.973 166.599 262.991 143.738 259.716 121.346C256.441 98.9547 247.004 77.9153 232.457 60.5799L245.48 49.6525Z"/>
+    <path d="M32.5199 49.6525C12.4997 73.5116 1.07277 103.403 0.0718378 134.533C-0.929098 165.663 8.55397 196.227 27 221.323V187.374C18.0273 166.599 15.0095 143.738 18.2841 121.346C21.5587 98.9547 30.9965 77.9153 45.5426 60.5799L32.5199 49.6525Z"/>
+    <path d="M69.7451 62.0845C88.7523 44.9703 113.423 35.5 139 35.5C164.577 35.5 189.248 44.9703 208.255 62.0845L196.88 74.718C180.995 60.4148 160.376 52.5 139 52.5C117.624 52.5 97.0056 60.4148 81.1203 74.718L69.7451 62.0845Z"/>
+    <path d="M96.2062 86.1541C108.314 76.3497 123.421 71 139 71C154.579 71 169.686 76.3497 181.794 86.1541L171.095 99.3656C162.015 92.0122 150.685 88 139 88C127.315 88 115.985 92.0122 106.905 99.3656L96.2062 86.1541Z"/>
+  </g>
+</svg>

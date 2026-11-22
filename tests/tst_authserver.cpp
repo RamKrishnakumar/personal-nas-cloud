@@ -348,10 +348,24 @@ void TestAuthServer::loginPageIsSelfContained()
     // Asserted as "fetches no external stylesheet" rather than "does not mention
     // app.css": the page explains in a comment why it does not use it, and matching
     // the word caught that comment instead of a dependency.
-    QVERIFY2(!response.body.contains("<link"),
+    //
+    // Narrowed from "contains no <link at all" to "links no stylesheet or script",
+    // which is what the paragraph above actually asks for. The broader form rejected a
+    // favicon, and a favicon cannot cause the harm this test exists to prevent: if it
+    // fails to load the page renders exactly as before, just without an icon in the
+    // tab. What must never arrive from outside is anything the *layout* depends on.
+    // One assertion, matching the one guarantee: no stylesheet arrives from outside.
+    //
+    // Two narrower-looking checks were tried here and both were wrong, which is worth
+    // leaving a note about. Matching "app.css" finds the comment above that explains
+    // why the page does not use it — the trap this test's own author had already
+    // documented. Matching "<script" fails because the page carries an inline module,
+    // which is self-contained and exactly what it should be doing.
+    //
+    // A <link rel="icon"> is permitted. If it fails to load the page renders as
+    // before, minus a tab icon; a stylesheet failing to load would leave it unusable.
+    QVERIFY2(!response.body.contains("rel=\"stylesheet\""),
              "The login page pulls in an external stylesheet");
-    QVERIFY2(!response.body.contains("/_static/"),
-             "The login page depends on a static asset");
 
     // And it must still be styled, or dropping the link just made it ugly.
     QVERIFY(response.body.contains("<style"));

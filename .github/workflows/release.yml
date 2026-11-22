@@ -61,18 +61,40 @@ jobs:
           echo "event=${{ github.event_name }} ref=${{ github.ref }} base=${{ github.base_ref }}"
           exit 1
 
+      # fetch-depth: 0 for the tags and the history between them. The whole version
+      # calculation is "what has been committed since the last release tag", and a
+      # shallow clone has neither half of that.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - id: read
-        name: Read the version from CMakeLists.txt
+        name: Work out the next version from the commit messages
         run: |
-          version=$(grep -oP 'project\(MyNAS VERSION \K[0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt)
+          # Nothing is read from a tracked file and nothing is written back. The
+          # previous version is the last v* tag; the increment comes from the
+          # Conventional Commits since it. See scripts/next-version.sh.
+          version=$(sh scripts/next-version.sh --explain)
+
           if [ -z "$version" ]; then
-            echo "::error::Could not read the version out of CMakeLists.txt."
+            echo "::error::Could not work out the next version."
             exit 1
           fi
+
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Releasing v$version"
+
+          previous=$(git tag -l 'v*' --merged HEAD --sort=-v:refname | head -n 1)
+          {
+            echo "### Version"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Previous release | \`${previous:-none}\` |"
+            echo "| This release | \`v${version}\` |"
+            echo ""
+            echo "Derived from the Conventional Commits since \`${previous:-the start}\`."
+            echo "Nothing is committed back — the tag is the record."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ── Windows: NSIS installer, plus a portable zip ───────────────────────────
   windows:
@@ -111,6 +133,7 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DNESTDRIVE_VERSION="${VERSION}" \
             -DNESTDRIVE_BUILD_TESTS=OFF \
             -DNESTDRIVE_BUILD_BENCH=OFF
           cmake --build build --parallel
@@ -158,6 +181,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
+            -DNESTDRIVE_VERSION="${VERSION}" \
             -DNESTDRIVE_BUILD_TESTS=OFF \
             -DNESTDRIVE_BUILD_BENCH=OFF
           cmake --build build --parallel
@@ -237,6 +261,7 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DNESTDRIVE_VERSION="${VERSION}" \
             -DNESTDRIVE_BUILD_TESTS=OFF \
             -DNESTDRIVE_BUILD_BENCH=OFF
           cmake --build build --parallel
@@ -488,8 +513,12 @@ jobs:
 
           # Everything since the previous tag, so the notes are generated from what
           # was actually committed rather than from memory.
-          previous=$(git describe --tags --abbrev=0 "v${VERSION}^" 2>/dev/null \
-                     || git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
+          #
+          # Listed the same way scripts/next-version.sh picks its baseline, so the
+          # notes cover exactly the commits the version was calculated from. The tag
+          # for this release does not exist yet — `gh release create` makes it below —
+          # so the newest tag here is still the previous release.
+          previous=$(git tag -l 'v*' --merged HEAD --sort=-v:refname | head -n 1)
 
           if [ -n "$previous" ]; then
             git log --no-merges --pretty='- %s' "${previous}..HEAD" >> notes.md

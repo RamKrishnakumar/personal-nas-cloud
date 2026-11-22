@@ -1,9 +1,50 @@
 cmake_minimum_required(VERSION 3.16)
 
-# The version lives here and nowhere else. The release workflow greps this line to
-# name its packages, so a release is cut by editing this number — not by typing a
-# version into a web form that can disagree with the binary it ships.
-project(MyNAS VERSION 0.6.0 LANGUAGES CXX)
+# ── Where the version comes from ─────────────────────────────────────────────
+# Git tags, not this file. Three sources, in order:
+#
+#   1. -DNESTDRIVE_VERSION=X.Y.Z, which is what the release workflow passes after
+#      scripts/next-version.sh has worked it out from the Conventional Commits since
+#      the last release. The build has to be told, because the tag for the version
+#      being built does not exist yet — it is created once publishing succeeds.
+#   2. The newest `v*` tag reachable from HEAD, so any ordinary clone — including one
+#      opened in Qt Creator — reports the release it is descended from.
+#   3. The fallback below, for a source download with no .git directory.
+#
+# Deliberately NOT a number maintained by hand. A version in a tracked file has to be
+# edited, committed, and then merged into every other branch to stop them disagreeing;
+# a tag belongs to a commit rather than a branch, so every branch that contains the
+# commit already agrees. That removes the merge-back entirely rather than automating it.
+#
+# Read by scripts/next-version.sh when no tag exists yet, which is the only time it
+# matters. It is a floor, not a statement about what is released.
+set(NESTDRIVE_FALLBACK_VERSION "0.6.0")
+
+if(NOT DEFINED NESTDRIVE_VERSION)
+    find_package(Git QUIET)
+
+    if(GIT_FOUND)
+        # --abbrev=0 for the bare tag rather than a describe string: project() wants
+        # X.Y.Z and would reject "v0.6.0-12-gabc1234".
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" describe --tags --abbrev=0 --match "v[0-9]*"
+            WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+            OUTPUT_VARIABLE NESTDRIVE_GIT_TAG
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+        )
+    endif()
+
+    if(NESTDRIVE_GIT_TAG MATCHES "^v([0-9]+\\.[0-9]+\\.[0-9]+)$")
+        set(NESTDRIVE_VERSION "${CMAKE_MATCH_1}")
+    else()
+        set(NESTDRIVE_VERSION "${NESTDRIVE_FALLBACK_VERSION}")
+    endif()
+endif()
+
+project(MyNAS VERSION "${NESTDRIVE_VERSION}" LANGUAGES CXX)
+
+message(STATUS "MyNAS version ${PROJECT_VERSION}")
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -203,6 +244,30 @@ qt_add_resources(nestdrive_handlers "nestdrive_web"
         web/login.html
 )
 
+# The icon, in one place for three jobs: the window and taskbar icon, the tray icon,
+# and the favicon the browser asks for. Keeping a single copy matters because the
+# alternative is a duplicate under web/ that is edited once and then disagrees with
+# itself for a year.
+#
+# Under the /web prefix — rather than a prefix of its own — because FileRouter serves
+# /_static/<name> from :/web/<name>, so this is what makes the favicon reachable at
+# all. Qt reads the same resource for the window icon; a QIcon built from SVG scales
+# to whatever size each use needs, which is why no PNG sizes are generated here.
+#
+# Aliased so the served URL is /_static/icon.svg rather than leaking the repository's
+# filename into the web interface.
+set_source_files_properties(packaging/nestdrive.svg
+    PROPERTIES QT_RESOURCE_ALIAS "icon.svg")
+set_source_files_properties(packaging/nestdrive-tray.svg
+    PROPERTIES QT_RESOURCE_ALIAS "tray.svg")
+
+qt_add_resources(nestdrive_handlers "nestdrive_icons"
+    PREFIX "/web"
+    FILES
+        packaging/nestdrive.svg
+        packaging/nestdrive-tray.svg
+)
+
 # ── Source files ─────────────────────────────────────────────────────────────
 qt_add_executable(MyNAS
     src/main.cpp
@@ -369,6 +434,87 @@ set_target_properties(MyNAS PROPERTIES
     MACOSX_BUNDLE_BUNDLE_VERSION       "${PROJECT_VERSION}"
     MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
 )
+
+# ── The icon the operating system shows for the file ─────────────────────────
+# Distinct from QApplication::setWindowIcon(), which only covers the application
+# while it is running. Explorer, the Start Menu, Finder and the Dock read the icon
+# out of the file itself, and neither reads SVG: Windows needs a .ico compiled into
+# the executable as a resource, macOS an .icns inside the bundle.
+#
+# Both are generated from packaging/nestdrive.svg during packaging rather than
+# committed, so they cannot drift from the artwork — see .github/workflows/release.yml.
+# A source build without them is not an error; the window icon still works and only
+# the file's own icon is the generic one.
+# A host tool rather than an external program, for the reason given at the top of
+# tools/mkicon/main.cpp: every external dependency added to packaging so far has
+# broken a release. Qt can write both .ico and .icns itself, so nothing needs
+# installing on any build machine or runner.
+#
+# Console target, and excluded from ALL so a build that does not need an icon does not
+# pay for it — the custom commands below depend on it directly, which is what causes
+# it to be built when it is actually wanted.
+set(NESTDRIVE_ICON_SVG "${CMAKE_CURRENT_SOURCE_DIR}/packaging/nestdrive.svg")
+
+if(WIN32 OR APPLE)
+    qt_add_executable(nestdrive_mkicon EXCLUDE_FROM_ALL tools/mkicon/main.cpp)
+    target_link_libraries(nestdrive_mkicon PRIVATE Qt6::Core Qt6::Gui)
+    set_target_properties(nestdrive_mkicon PROPERTIES
+        WIN32_EXECUTABLE FALSE
+        MACOSX_BUNDLE    FALSE)
+endif()
+
+if(WIN32)
+    set(NESTDRIVE_ICO "${CMAKE_CURRENT_BINARY_DIR}/nestdrive.ico")
+
+    # 256px, which is the largest size the Windows shell uses. Only one size is
+    # written; Windows downscales it for the 16 and 32px cases. A hand-tuned 16px
+    # entry would be crisper, but it would also mean a multi-image ICO writer that Qt
+    # does not provide and this does not need.
+    add_custom_command(
+        OUTPUT  "${NESTDRIVE_ICO}"
+        COMMAND nestdrive_mkicon "${NESTDRIVE_ICON_SVG}" "${NESTDRIVE_ICO}" 256
+        DEPENDS nestdrive_mkicon "${NESTDRIVE_ICON_SVG}"
+        COMMENT "Generating the Windows application icon from packaging/nestdrive.svg"
+        VERBATIM
+    )
+
+    # A .rc is the only way to put an icon in a Windows executable — the linker reads
+    # it from a compiled resource, and there is no CMake property for it. IDI_ICON1 is
+    # the conventional first icon, which is the one the shell displays.
+    #
+    # Written into the binary directory beside the .ico so the relative reference
+    # inside it resolves, whichever directory the resource compiler is invoked from.
+    set(NESTDRIVE_ICON_RC "${CMAKE_CURRENT_BINARY_DIR}/nestdrive_icon.rc")
+    file(WRITE "${NESTDRIVE_ICON_RC}" "IDI_ICON1 ICON \"nestdrive.ico\"\n")
+
+    # The .rc does not itself depend on the .ico as far as the build graph is
+    # concerned, so the generated file is attached to the target explicitly. Without
+    # this the first build races: the resource compiler can run before the icon exists.
+    set_source_files_properties("${NESTDRIVE_ICO}" PROPERTIES GENERATED TRUE)
+    target_sources(MyNAS PRIVATE "${NESTDRIVE_ICON_RC}" "${NESTDRIVE_ICO}")
+
+elseif(APPLE)
+    set(NESTDRIVE_ICNS "${CMAKE_CURRENT_BINARY_DIR}/nestdrive.icns")
+
+    add_custom_command(
+        OUTPUT  "${NESTDRIVE_ICNS}"
+        COMMAND nestdrive_mkicon "${NESTDRIVE_ICON_SVG}" "${NESTDRIVE_ICNS}" 1024
+        DEPENDS nestdrive_mkicon "${NESTDRIVE_ICON_SVG}"
+        COMMENT "Generating the macOS application icon from packaging/nestdrive.svg"
+        VERBATIM
+    )
+
+    # Both required, and neither does the other's job: MACOSX_PACKAGE_LOCATION is what
+    # copies the file into Contents/Resources, while MACOSX_BUNDLE_ICON_FILE only
+    # records the filename in Info.plist. Setting the second alone names a file that
+    # was never put in the bundle, and Finder falls back to the generic icon with no
+    # warning anywhere.
+    set_source_files_properties("${NESTDRIVE_ICNS}" PROPERTIES
+        GENERATED               TRUE
+        MACOSX_PACKAGE_LOCATION "Resources")
+    target_sources(MyNAS PRIVATE "${NESTDRIVE_ICNS}")
+    set_target_properties(MyNAS PROPERTIES MACOSX_BUNDLE_ICON_FILE "nestdrive.icns")
+endif()
 
 install(TARGETS MyNAS
     BUNDLE  DESTINATION .

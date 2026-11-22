@@ -210,6 +210,16 @@ jobs:
               test -f dist/MyNAS.exe
               test -f dist/Qt6Core.dll
               test -f dist/plugins/sqldrivers/qsqlite.dll
+
+              # The icon is generated from the SVG at build time and compiled into
+              # the executable as a resource. If that step is skipped the build still
+              # succeeds and Explorer quietly shows the generic icon, so the presence
+              # of the generated file is the only thing that distinguishes the two.
+              test -s build/nestdrive.ico
+
+              # Without the SVG icon engine, QIcon cannot render the window icon from
+              # the resource and the title bar falls back to nothing.
+              test -f dist/plugins/iconengines/qsvgicon.dll
               ;;
             macOS)
               test -x dist/MyNAS.app/Contents/MacOS/MyNAS
@@ -223,6 +233,13 @@ jobs:
               # deployment looks like.
               ls dist/MyNAS.app/Contents/Frameworks | grep -q QtCore
               ls dist/MyNAS.app/Contents/PlugIns/sqldrivers | grep -q sqlite
+
+              # Both halves, because each fails silently on its own and neither
+              # implies the other: MACOSX_PACKAGE_LOCATION copies the file in,
+              # MACOSX_BUNDLE_ICON_FILE names it in Info.plist, and Finder shows the
+              # generic icon if either is missing without logging anything.
+              test -s dist/MyNAS.app/Contents/Resources/nestdrive.icns
+              grep -q nestdrive.icns dist/MyNAS.app/Contents/Info.plist
               ;;
             Linux)
               test -f dist/bin/MyNAS

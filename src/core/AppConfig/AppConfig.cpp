@@ -199,6 +199,21 @@ bool AppConfig::useTailscaleCert() const
     return m_settings.value("Remote/useTailscaleCert", true).toBool();
 }
 
+// Resolved against the executable's directory by core::resolveTlsPath(), the same as
+// certPath() and keyPath(). Named distinctly from those so that a glance at the
+// directory says which pair NestDrive maintains and which pair it must not touch.
+QString AppConfig::tailscaleCertPath() const
+{
+    return m_settings.value("Remote/tailscaleCertPath",
+                            "tailscale-cert.pem").toString();
+}
+
+QString AppConfig::tailscaleKeyPath() const
+{
+    return m_settings.value("Remote/tailscaleKeyPath",
+                            "tailscale-key.pem").toString();
+}
+
 QString AppConfig::tailscalePath() const
 {
     return m_settings.value("Remote/tailscalePath", "").toString().trimmed();
