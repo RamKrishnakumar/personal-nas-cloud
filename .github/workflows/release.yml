@@ -498,7 +498,7 @@ jobs:
           | Platform | File | Notes |
           |---|---|---|
           | **Windows 10/11 (x64)** | `...-windows-x64.exe` | Installer. SmartScreen will warn — **More info → Run anyway**. |
-          | **macOS (Apple Silicon)** | `...-macos-arm64.dmg` | Open, drag to Applications. First launch: **right-click → Open**. |
+          | **macOS (Apple Silicon)** | `...-macos-arm64.dmg` | Open, drag to Applications. Blocked on first launch — **System Settings → Privacy & Security → Open Anyway**. |
           | **Linux (x86_64)** | `...-linux-x86_64.AppImage` | `chmod +x` it and run. No install needed. |
 
           Both warnings are because the binaries are unsigned — see
@@ -511,20 +511,16 @@ jobs:
           ## Changes
           HEADER
 
-          # Everything since the previous tag, so the notes are generated from what
-          # was actually committed rather than from memory.
+          # Grouped into what the reader came for, rather than a flat list of commit
+          # subjects. The previous version of this step emitted `git log --pretty=- %s`
+          # directly, which put a security fix and a pipeline tweak side by side with
+          # equal weight and leaked `fix(ci):` into text meant for a person.
           #
-          # Listed the same way scripts/next-version.sh picks its baseline, so the
-          # notes cover exactly the commits the version was calculated from. The tag
-          # for this release does not exist yet — `gh release create` makes it below —
-          # so the newest tag here is still the previous release.
-          previous=$(git tag -l 'v*' --merged HEAD --sort=-v:refname | head -n 1)
-
-          if [ -n "$previous" ]; then
-            git log --no-merges --pretty='- %s' "${previous}..HEAD" >> notes.md
-          else
-            echo "- First packaged release." >> notes.md
-          fi
+          # The script finds the previous tag the same way scripts/next-version.sh
+          # does, so the notes cover exactly the commits the version was calculated
+          # from. The tag for this release does not exist yet — `gh release create`
+          # creates it below — so the newest tag is still the previous release.
+          sh scripts/release-notes.sh >> notes.md
 
           cat notes.md
 

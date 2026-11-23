@@ -186,13 +186,35 @@ git checkout -b production
 git push -u origin production
 ```
 
-### b. Let the release job create releases
+### b. Turn on squash merging — the rest depends on it
+
+**Settings → General → Pull Requests:**
+
+- Tick **Allow squash merging**, and set *Default commit message* to
+  **"Pull request title"**.
+- Untick **Allow merge commits** and **Allow rebase merging**.
+
+This is not a style preference, it is what makes the version calculation and the
+release notes work. Both read commit subjects. A merge commit contributes
+`Merge pull request #7 from …`, which has no conventional type, so a pull request full
+of good work can land as a change the tooling has no opinion about — no version bump,
+and a release note that says nothing.
+
+Squashing collapses each pull request into one commit whose subject is the title the
+**PR title** check already validated. One deliberate sentence per change, instead of
+six work-in-progress commits.
+
+Leaving merge commits enabled is the failure mode worth guarding against, because
+nothing breaks loudly: the release simply comes out as a patch with an empty-looking
+changelog, and the cause is three settings away from where you are looking.
+
+### c. Let the release job create releases
 
 **Settings → Actions → General → Workflow permissions** → *Read and write
 permissions*. Without it, `gh release create` fails with a 403 after all three builds
 have already run, which is a slow way to find out.
 
-### c. Require the checks to pass
+### d. Require the checks to pass
 
 Two rulesets, because the two branch kinds need different checks. **A check can only
 be required on a branch where the workflow producing it actually runs** — require one
@@ -201,6 +223,7 @@ that cannot report and the pull request waits for it forever.
 **Ruleset 1 — targeting `main` and `develop`.** Require a pull request, and:
 
 ```
+Pull request title
 Secrets and hygiene
 Linux · x86_64 · GCC
 Windows · x64 · MSVC
@@ -211,6 +234,7 @@ macOS · Apple Silicon · Clang
 because the point of the production branch is that it ships:
 
 ```
+Pull request title
 Secrets and hygiene
 Linux · x86_64 · GCC
 Windows · x64 · MSVC
