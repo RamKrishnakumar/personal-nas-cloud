@@ -2,27 +2,39 @@
 <!--
   NestDrive application icon.
 
-  Scalable rather than a set of PNGs because linuxdeploy accepts SVG directly and a
-  single file cannot go out of sync with itself at one size and not another. A drive
-  platter with a signal arc over it: storage that is also reachable.
+  The artwork is unchanged from what was supplied. What changed is the canvas: the
+  original was 411x426, and an application icon has to be square. Every converter
+  that produces a .ico or .icns works from square raster sizes (16, 32, ... 1024), so
+  a non-square source is either stretched — which bends the circular signal arcs into
+  ellipses — or letterboxed with transparent bands down two sides.
+
+  Squared by padding rather than by scaling: 411 becomes 426 with the art shifted
+  7.5px right, so it sits centred and its proportions are untouched.
+
+  The rounded rectangle is drawn as a filled shape rather than left as the original
+  clip path. A clip hides what falls outside it but leaves the corners transparent
+  only if something is painted there in the first place; drawing the background as a
+  rect guarantees the fill reaches the full square. The radius is the original 87
+  scaled to the new width (87/411 x 426 = 90) so the corners keep their original
+  curvature.
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
-  <defs>
-    <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#3b82f6"/>
-      <stop offset="1" stop-color="#1d4ed8"/>
-    </linearGradient>
-  </defs>
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="426" height="426" viewBox="0 0 426 426" fill="none">
 
-  <rect x="16" y="16" width="224" height="224" rx="48" fill="url(#shell)"/>
+  <!-- Full-bleed background. Opaque inside the rounded square, transparent outside,
+       which is what macOS draws as-is in the Dock and what iOS needs in order not to
+       render the transparency as black on a home screen. -->
+  <rect width="426" height="426" rx="90" fill="#112137"/>
 
-  <!-- The platter. -->
-  <circle cx="128" cy="150" r="54" fill="none" stroke="#ffffff" stroke-width="14"/>
-  <circle cx="128" cy="150" r="11" fill="#ffffff"/>
-
-  <!-- Reachable from away: two arcs rising out of the drive. -->
-  <path d="M 128 74 A 54 54 0 0 1 182 20" fill="none" stroke="#ffffff"
-        stroke-width="13" stroke-linecap="round" opacity="0.95"/>
-  <path d="M 128 74 A 86 86 0 0 1 214 -12" fill="none" stroke="#ffffff"
-        stroke-width="13" stroke-linecap="round" opacity="0.55"/>
+  <g transform="translate(7.5 0)">
+    <path d="M157.75 302.75V215.5C157.75 209.167 160.583 206 166.25 206C168.75 206 171.333 207.333 174 210L236 274.5V206.25H252.75V293.5C252.75 299.833 249.833 303 244 303C241.333 303 238.667 301.667 236 299L174.5 235V302.75H157.75Z" fill="#F9F9FA"/>
+    <path d="M78.75 326.25H174.75C175.75 330.417 178.417 332.5 182.75 332.5H228.25C232.583 332.5 235.25 330.417 236.25 326.25H332.25C332.25 337.75 326.5 343.5 315 343.5H96C84.5 343.5 78.75 337.75 78.75 326.25Z" fill="#F9F9FA"/>
+    <path d="M110.702 121.842C136.436 97.8446 170.313 84.5 205.5 84.5C240.687 84.5 274.564 97.8446 300.298 121.842L288.704 134.275C266.117 113.213 236.383 101.5 205.5 101.5C174.617 101.5 144.883 113.213 122.296 134.275L110.702 121.842Z" fill="#33D5FA"/>
+    <path d="M286.25 161L273.75 172.75C276.25 175.917 278.5 179.333 280.5 183H262.75L249.25 196.5H286.75C292.25 213 290.75 229 290.75 248.5V316.25H307.5V235C307.5 204 305.5 186.5 286.25 161Z" fill="#F9F9FA"/>
+    <path d="M124.75 161L137.25 172.75C134.75 175.917 132.5 179.333 130.5 183H148.25L161.75 196.5H124.25C118.75 213 120.25 229 120.25 248.5V316.25H103.5V235C103.5 204 105.5 186.5 124.75 161Z" fill="#F9F9FA"/>
+    <path d="M311.98 134.153C332 158.012 343.427 187.903 344.428 219.033C345.429 250.163 335.946 280.727 317.5 305.823V271.874C326.473 251.099 329.491 228.238 326.216 205.846C322.941 183.455 313.503 162.415 298.957 145.08L311.98 134.153Z" fill="#33D5FA"/>
+    <path d="M99.0198 134.153C78.9996 158.012 67.5727 187.903 66.5718 219.033C65.5708 250.163 75.0539 280.727 93.5 305.823V271.874C84.5272 251.099 81.5094 228.238 84.784 205.846C88.0586 183.455 97.4965 162.415 112.043 145.08L99.0198 134.153Z" fill="#33D5FA"/>
+    <path d="M136.245 146.585C155.252 129.47 179.923 120 205.5 120C231.077 120 255.748 129.47 274.755 146.585L263.38 159.218C247.495 144.915 226.876 137 205.5 137C184.124 137 163.506 144.915 147.62 159.218L136.245 146.585Z" fill="#33D5FA"/>
+    <path d="M162.706 170.654C174.814 160.85 189.921 155.5 205.5 155.5C221.079 155.5 236.186 160.85 248.294 170.654L237.595 183.866C228.515 176.512 217.185 172.5 205.5 172.5C193.815 172.5 182.485 176.512 173.405 183.866L162.706 170.654Z" fill="#33D5FA"/>
+  </g>
 </svg>

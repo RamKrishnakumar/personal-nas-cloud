@@ -19,12 +19,23 @@ port=9090
 
 ; Root directory exposed to browsers. Use forward slashes on every platform.
 ; Windows: E:/    Linux: /mnt/storage    macOS: /Volumes/Storage
+;
+; There is no need to edit this by hand any more — use the "Storage folder…"
+; button in the application, which writes the choice back here.
 nasRoot=E:/
 
-; Set to true to serve HTTPS instead of plain HTTP.
-; Requires certPath and keyPath below to point at a valid PEM certificate and
-; private key. Generate a self-signed pair for LAN use with:
-;     sh scripts/gen-cert.sh
+; Forces HTTPS using YOUR OWN certificate at certPath/keyPath below.
+;
+; Leaving this false does NOT mean plain HTTP. When Tailscale is in use, NestDrive
+; obtains a browser-trusted certificate for the .ts.net name by itself and serves
+; HTTPS without being asked — see tailscaleCertPath in the [Remote] section. That
+; needs no setting here, because there is no trade-off to make: the certificate is
+; real and the alternative is plaintext.
+;
+; Set this to true only when you are supplying the certificate, which is the case
+; for a public IP with a Let's Encrypt certificate from win-acme or similar. On that
+; path a certificate that will not load is a hard error and the server refuses to
+; start, because you asked for encryption and should not silently be given none.
 useHttps=false
 
 ; Certificate and private key paths. A relative path resolves against the folder
@@ -114,6 +125,19 @@ upnpPortForward=false
 ; Costs nothing when Tailscale is absent or signed out: the server keeps serving
 ; the LAN with whatever certificate is already there.
 useTailscaleCert=true
+
+; Where the certificate Tailscale issues is kept. NestDrive owns these two files and
+; rewrites them when the certificate is renewed.
+;
+; Separate from certPath/keyPath on purpose, and the separation is what lets HTTPS be
+; automatic. Those two may be a certificate you obtained yourself with win-acme,
+; which keeps its own renewal schedule; writing over them would undo that. With its
+; own pair of files there is nothing of yours to overwrite, so no permission is
+; needed and none is asked for.
+;
+; Relative paths resolve against the folder containing the executable.
+tailscaleCertPath=tailscale-cert.pem
+tailscaleKeyPath=tailscale-key.pem
 
 ; Path to the tailscale binary. Leave blank for the normal behaviour, which is to
 ; look beside the executable and then on PATH.

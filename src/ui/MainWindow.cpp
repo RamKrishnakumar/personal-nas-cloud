@@ -20,6 +20,11 @@
 #include <QDebug>                       // qDebug() for logging to Qt Creator's output panel
 #include <QDateTime>                    // Certificate expiry arithmetic
 #include <QMessageBox>                  // Confirmation after an account is created
+#include <QFile>                        // Is there a Tailscale certificate on disk yet?
+#include <QFileDialog>                  // Choosing which folder to share
+#include <QClipboard>                   // Copying the share link
+#include <QGuiApplication>              // Reaching the clipboard
+#include <QTimer>                       // Resetting the "Copied ✓" label
 
 #include "app/Paths.h"
 #include "auth/UserStore.h"             // Account lookup and creation
@@ -387,24 +392,24 @@ void MainWindow::startDdnsIfUseful()
 
 void MainWindow::startTailscaleCertificates()
 {
-    if (!m_config.useHttps()) {
-        // Reachable, but over plain HTTP — which inside the overlay is still
-        // encrypted end to end by WireGuard, so this is not the hole it looks like.
-        // What it costs is browser trust and the secure-context features that depend
-        // on it, not confidentiality.
-        //
-        // No certificate is requested, deliberately: certPath and keyPath are the
-        // owner's files until they ask for HTTPS, and silently overwriting a
-        // certificate they are managing themselves would be a poor way to repay
-        // leaving this setting at its default.
-        qInfo() << "[Remote] Reachable over http:// at" << m_remoteName
-                << "— set useHttps=true in config.ini for a browser-trusted "
-                   "certificate.";
-        return;
-    }
-
+    // No useHttps check any more, and removing it is the point.
+    //
+    // This used to return early unless useHttps was explicitly set, on the reasoning
+    // that certPath and keyPath are the owner's files and overwriting them would undo
+    // a win-acme setup. The reasoning was sound; the conclusion was wrong. Since
+    // useHttps defaults to false, every fresh install served plain http:// over its
+    // .ts.net name — including, as it turned out, the first real one. A default that
+    // can only be corrected by editing an INI file nobody has been told about is not
+    // a default, it is a trap.
+    //
+    // The objection is answered by writing somewhere else entirely. The Tailscale
+    // certificate now goes to its own pair of files, so there is nothing of the
+    // owner's to overwrite and no reason left to ask first. See
+    // AppConfig::tailscaleCertPath().
     m_certRenewer = std::make_unique<core::CertRenewer>(
-        m_tailscale.get(), m_config.certPath(), m_config.keyPath());
+        m_tailscale.get(),
+        m_config.tailscaleCertPath(),
+        m_config.tailscaleKeyPath());
 
     m_certRenewer->setDnsName(m_remoteName);
     m_certRenewer->setThresholdDays(m_config.certRenewDays());
@@ -420,7 +425,33 @@ void MainWindow::startTailscaleCertificates()
         if (m_certWarning)
             m_certWarning->setVisible(false);
 
-        qInfo() << "[Remote] ✅ Certificate installed without a restart.";
+        // A renewal of an already-HTTPS server needs nothing further: reloadTls()
+        // affects connections made from here on, and the point of doing it this way
+        // is that a 90-day certificate can come due without interrupting a download.
+        if (m_fileServer->useHttps()) {
+            qInfo() << "[Remote] ✅ Certificate installed without a restart.";
+            return;
+        }
+
+        // Arriving while serving plain HTTP is the first-run case: the certificate did
+        // not exist when the server was started, because this is the request that
+        // created it. Switching scheme means re-listening — the scheme is fixed per
+        // listener, and every URL already handed out has the wrong one in it.
+        //
+        // Restarted rather than left for the user to notice, because the alternative
+        // is an application that is quietly less secure than it reports until somebody
+        // happens to toggle it. Any transfer in flight is lost, which on the run that
+        // obtains the very first certificate means nothing is lost.
+        m_fileServer->setUseHttps(true);
+
+        if (m_fileServer->isRunning()) {
+            qInfo() << "[Remote] Certificate obtained — restarting on https://";
+            m_fileServer->stop();
+            m_fileServer->start(m_config.serverPort());
+        } else {
+            qInfo() << "[Remote] ✅ Certificate obtained; the server will start on "
+                       "https://";
+        }
     });
 
     connect(m_certRenewer.get(), &core::CertRenewer::renewalFailed,
@@ -526,6 +557,77 @@ QString MainWindow::remoteUrl() const
 
     return QStringLiteral("%1://%2:%3")
         .arg(scheme(), host, QString::number(m_fileServer->port()));
+}
+
+QString MainWindow::shareUrl() const
+{
+    // The remote address when there is one, because that is the link worth sending:
+    // a LAN address pasted into a message works only for whoever is already in the
+    // house, and fails confusingly for everyone else.
+    const QString remote = remoteUrl();
+    if (!remote.isEmpty())
+        return remote;
+
+    const QString local = m_fileServer->localIP();
+    if (local.isEmpty())
+        return {};
+
+    return QStringLiteral("%1://%2:%3")
+        .arg(scheme(), local, QString::number(m_fileServer->port()));
+}
+
+void MainWindow::onCopyLink()
+{
+    const QString url = shareUrl();
+    if (url.isEmpty())
+        return;
+
+    QGuiApplication::clipboard()->setText(url);
+
+    // Confirmed on the button itself rather than in a dialog. A dialog for this would
+    // need dismissing, which is more work than the copy saved.
+    m_copyLinkBtn->setText(tr("Copied ✓"));
+    QTimer::singleShot(1500, this, [this] {
+        if (m_copyLinkBtn)
+            m_copyLinkBtn->setText(tr("Copy link"));
+    });
+
+    qInfo() << "[UI] Copied" << url << "to the clipboard.";
+}
+
+void MainWindow::onChooseFolder()
+{
+    const QString current = m_config.nasRoot();
+
+    const QString chosen = QFileDialog::getExistingDirectory(
+        this, tr("Choose the folder to share"),
+        QDir(current).exists() ? current : QDir::homePath(),
+        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+
+    if (chosen.isEmpty())
+        return;                     // Cancelled.
+
+    // Written through AppConfig so it survives a restart. Without this the choice
+    // would last exactly as long as the window.
+    m_config.setNasRoot(chosen);
+    m_fileServer->setNasRoot(chosen);
+
+    // The tree is rooted at the old folder, so it has to be re-pointed as well or the
+    // window goes on showing somewhere the server is no longer serving.
+    if (m_fileModel && m_fileTree) {
+        m_fileModel->setRootPath(chosen);
+        m_fileTree->setRootIndex(m_fileModel->index(chosen));
+    }
+
+    qInfo() << "[UI] Sharing" << chosen;
+
+    // DontResolveSymlinks above keeps the path as the owner picked it; FileRouter
+    // canonicalises it internally for containment checks and knows how to strip
+    // either form — see http::stripRoot().
+    if (m_fileServer->isRunning()) {
+        m_serverStatus->setToolTip(
+            tr("Now sharing %1. Already-open pages may need a refresh.").arg(chosen));
+    }
 }
 
 void MainWindow::onRemoteMethodChanged(int index)
@@ -647,12 +749,17 @@ void MainWindow::onShowRemoteAccess()
         const QDateTime expiry =
             m_certRenewer ? m_certRenewer->currentExpiry() : QDateTime();
 
-        if (!m_config.useHttps()) {
-            body += tr("<p>Served over plain HTTP. Traffic is still encrypted end to "
-                       "end by Tailscale itself, so this is not an exposure — but the "
-                       "browser will not show a padlock. Set <tt>useHttps=true</tt> "
-                       "in <tt>config.ini</tt> for a browser-trusted certificate, "
-                       "obtained and renewed automatically.</p>");
+        // Keyed on what the server is actually doing, not on what config.ini asks
+        // for. Those differ now: HTTPS no longer waits to be switched on, so reading
+        // the setting here would report plain HTTP on a server already serving TLS.
+        if (!m_fileServer->useHttps()) {
+            body += tr("<p>Served over plain HTTP for the moment. Traffic is still "
+                       "encrypted end to end by Tailscale itself, so this is not an "
+                       "exposure — but the browser will not show a padlock. A "
+                       "browser-trusted certificate is requested automatically; if "
+                       "none has arrived, enable HTTPS certificates for your tailnet "
+                       "at <tt>login.tailscale.com/admin/dns</tt> and restart the "
+                       "server.</p>");
         } else if (expiry.isValid()) {
             body += tr("<p>Certificate valid until %1, renewed automatically while "
                        "NestDrive is running.</p>")
@@ -803,10 +910,30 @@ void MainWindow::setupUI()
     connect(m_remoteBtn, &QPushButton::clicked,
             this,        &MainWindow::onShowRemoteAccess);
 
+    // Which folder is being shared. Previously only settable by hand-editing
+    // config.ini, where the default is E:/ — a drive that exists on the machine this
+    // was written on and almost nowhere else. Anyone whose library sat anywhere other
+    // than E:/ got the silent home-directory fallback and no way to correct it.
+    m_folderBtn = new QPushButton("Storage folder…", this);
+    m_folderBtn->setFixedHeight(32);
+    connect(m_folderBtn, &QPushButton::clicked,
+            this,        &MainWindow::onChooseFolder);
+
+    // Typing a MagicDNS name by hand on a phone is error-prone and the error looks
+    // like the server being down.
+    m_copyLinkBtn = new QPushButton("Copy link", this);
+    m_copyLinkBtn->setFixedHeight(32);
+    m_copyLinkBtn->setEnabled(false);          // Nothing to copy until it is running.
+    m_copyLinkBtn->setToolTip(tr("Start the server to get a link to share."));
+    connect(m_copyLinkBtn, &QPushButton::clicked,
+            this,          &MainWindow::onCopyLink);
+
     // Add button and label to the horizontal bar
     barLayout->addWidget(m_serverBtn);
     barLayout->addWidget(m_serverStatus);
     barLayout->addStretch(); // Pushes button and label to the left, leaves right side empty
+    barLayout->addWidget(m_copyLinkBtn);
+    barLayout->addWidget(m_folderBtn);
     barLayout->addWidget(m_remoteMethodBox);
     barLayout->addWidget(m_remoteBtn);
     barLayout->addWidget(m_accountsBtn);
@@ -895,23 +1022,53 @@ void MainWindow::onToggleServer()
     // ── Read config ───────────────────────────────────────────────────────
     m_fileServer->setNasRoot(m_config.nasRoot());
 
-    // ── Step 1: wire TLS if useHttps = true in config.ini ────────────────
-    const bool wantHttps = m_config.useHttps();
+    // ── Step 1: decide between http and https ────────────────────────────
+    // Two independent reasons to serve HTTPS, and the second is new.
+    //
+    // The owner can ask for it with useHttps=true, which uses their own certificate
+    // and fails loudly if it cannot be loaded — on that path a silent fallback to
+    // plain HTTP would be the worst outcome, because they asked for encryption and
+    // would not be told they did not get it.
+    //
+    // Otherwise, if Tailscale has already given us a certificate, use it without
+    // being asked. There is no trade-off to weigh: the certificate is real, browsers
+    // trust it, and the alternative is plaintext. This is what stops a fresh install
+    // from serving http:// over its .ts.net name.
+    QString certificate = m_config.certPath();
+    QString privateKey  = m_config.keyPath();
+    bool    wantHttps   = m_config.useHttps();
+    bool    mustSucceed = wantHttps;
+
+    if (!wantHttps) {
+        const QString tailscaleCert = core::resolveTlsPath(m_config.tailscaleCertPath());
+        const QString tailscaleKey  = core::resolveTlsPath(m_config.tailscaleKeyPath());
+
+        if (QFile::exists(tailscaleCert) && QFile::exists(tailscaleKey)) {
+            certificate = m_config.tailscaleCertPath();
+            privateKey  = m_config.tailscaleKeyPath();
+            wantHttps   = true;
+            mustSucceed = false;   // Fall back to HTTP rather than refuse to serve.
+        }
+    }
+
     m_fileServer->setUseHttps(wantHttps);
 
-    if (wantHttps) {
-        const bool tlsOk = m_fileServer->loadTlsFiles(
-            m_config.certPath(),   // e.g. "cert.pem" next to exe
-            m_config.keyPath()     // e.g. "key.pem"  next to exe
-        );
-
-        if (!tlsOk) {
-            // Surface the error in the status label so the user
-            // can fix the paths in config.ini without digging in logs
+    if (wantHttps && !m_fileServer->loadTlsFiles(certificate, privateKey)) {
+        if (mustSucceed) {
+            // Surface the error in the status label so the user can fix the paths in
+            // config.ini without digging through logs.
             m_serverStatus->setStyleSheet("color: #ff4444; font-weight: bold;");
             m_serverStatus->setText("⚠️ TLS error: " + m_fileServer->tlsErrorString());
             return;
         }
+
+        // The Tailscale certificate was there a moment ago and will not load — a
+        // half-written file from a renewal that died mid-write is the realistic
+        // cause. Serving the library over HTTP beats refusing to serve it at all,
+        // and the next renewal check replaces the file.
+        qWarning() << "[Remote] ⚠️ Ignoring an unreadable Tailscale certificate:"
+                   << m_fileServer->tlsErrorString();
+        m_fileServer->setUseHttps(false);
     }
 
     // ── Start server (HTTP or HTTPS depending on setUseHttps above) ───────
@@ -938,6 +1095,14 @@ void MainWindow::onServerStarted(QString ip, quint16 port)
     m_serverStatus->setStyleSheet("color: #00cc44; font-weight: bold;");
     m_serverStatus->setText(text);
     m_serverBtn->setText("■ Stop Server");
+
+    if (m_copyLinkBtn) {
+        const QString share = shareUrl();
+        m_copyLinkBtn->setEnabled(!share.isEmpty());
+        m_copyLinkBtn->setToolTip(share.isEmpty()
+                                      ? tr("No shareable address yet.")
+                                      : tr("Copy %1").arg(share));
+    }
 
     // Checked on start rather than only when the renewer's daily timer fires, so an
     // application that has been closed for two months says something immediately
@@ -971,4 +1136,9 @@ void MainWindow::onServerStopped()
 
     // Change button label back to show start action
     m_serverBtn->setText("▶  Start Server");
+
+    if (m_copyLinkBtn) {
+        m_copyLinkBtn->setEnabled(false);
+        m_copyLinkBtn->setToolTip(tr("Start the server to get a link to share."));
+    }
 }

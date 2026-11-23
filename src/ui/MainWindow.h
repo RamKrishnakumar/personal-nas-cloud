@@ -116,6 +116,17 @@ private slots:
     /** Asks the router to forward the server's port to this machine. */
     void onForwardPort();
 
+    /**
+     * @brief Chooses which folder is shared, and remembers it.
+     *
+     * The only way to change this used to be editing config.ini, whose default is
+     * E:/ — a drive that exists on the machine this was written on and few others.
+     */
+    void onChooseFolder();
+
+    /** Puts the shareable address on the clipboard. */
+    void onCopyLink();
+
 private:
     /** Prompts for the administrator account when none exists yet. */
     void promptForFirstAdminIfNeeded();
@@ -182,6 +193,14 @@ private:
     /** "https" or "http", matching how the server was actually started. */
     QString scheme() const;
 
+    /**
+     * @brief The address worth sending to somebody, or empty when there is none.
+     *
+     * Prefers the remote address over the LAN one: a LAN address in a message works
+     * only for people already in the house and fails confusingly for everyone else.
+     */
+    QString shareUrl() const;
+
     // ── UI Widget Members ──────────────────────────────────────────────────────
     // Initialized to nullptr so they have a safe default value before
     // setupUI() assigns real objects to them.
@@ -195,6 +214,8 @@ private:
     QPushButton*      m_accountsBtn  = nullptr; // Opens the account dialog
     QLabel*           m_accountWarning = nullptr; // Shown while no account exists
     QPushButton*      m_remoteBtn    = nullptr; // Opens the remote access dialog
+    QPushButton*      m_folderBtn    = nullptr; // Chooses the folder to share
+    QPushButton*      m_copyLinkBtn  = nullptr; // Copies the shareable address
     QLabel*           m_certWarning  = nullptr; // Shown while the certificate is near expiry
     QComboBox*        m_remoteMethodBox = nullptr; // Auto / Tailscale / Public link / LAN
 
