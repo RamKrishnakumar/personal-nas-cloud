@@ -1,0 +1,76 @@
+# Checks that a pull request title is a usable commit subject.
+#
+# This matters because of squash merging: the title becomes the single commit subject
+# on the target branch, and three things read it afterwards —
+# scripts/next-version.sh to decide minor or patch, scripts/release-notes.sh to sort
+# the change into New, Fixed or Internal, and whoever reads the history later.
+#
+# A title of "updates" passes a human glance, lands as the only record of the work,
+# and silently costs a version bump. Hence a check.
+#
+# ── Why this is its own workflow ────────────────────────────────────────────
+#
+# It needs the `edited` event, so that fixing a rejected title re-runs the check
+# rather than leaving the pull request red until an unrelated push. Adding `edited`
+# to ci.yml would rebuild on three operating systems every time somebody corrects a
+# typo in a title, which is around eight minutes of runners for a text change.
+#
+# Separate file, seconds long, and it can be a required check in its own right.
+
+name: PR title
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Pull request title
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the title
+        # Passed through the environment rather than interpolated into the script.
+        #
+        # A pull request title is attacker-controlled text: anybody who can open a
+        # pull request chooses it. Written as "${{ github.event.pull_request.title }}"
+        # inside a run block, GitHub substitutes it before the shell parses the line,
+        # so a title containing `; curl …` would execute. Through env it is only ever
+        # data, whatever it contains.
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if sh scripts/check-commit-subject.sh "$TITLE"; then
+            {
+              echo "### Title accepted"
+              echo ""
+              echo '```'
+              echo "$TITLE"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            # The script has already explained itself on stderr, which is in the log.
+            # Repeated into the summary so it is visible without opening the job.
+            {
+              echo "### Title needs changing"
+              echo ""
+              echo '```'
+              echo "$TITLE"
+              echo '```'
+              echo ""
+              echo "See the job log for the accepted format, or run it yourself:"
+              echo ""
+              echo '```sh'
+              echo 'sh scripts/check-commit-subject.sh "your title here"'
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi

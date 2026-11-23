@@ -111,16 +111,29 @@ page. Nothing needs to be built.
 | Platform | File | Notes |
 |---|---|---|
 | **Windows 10/11 (x64)** | `NestDrive-<version>-windows-x64.exe` | Installer. A portable `.zip` is published alongside it. SmartScreen warns because the binary is unsigned — **More info → Run anyway**. |
-| **macOS (Apple Silicon)** | `NestDrive-<version>-macos-arm64.dmg` | Open it and drag NestDrive to Applications. First launch: **right-click → Open**, once. |
+| **macOS (Apple Silicon)** | `NestDrive-<version>-macos-arm64.dmg` | Open it and drag NestDrive to Applications. First launch is blocked — see below. |
 | **Linux (x86_64)** | `NestDrive-<version>-linux-x86_64.AppImage` | `chmod +x` and run. No installation. TIFF photos get no thumbnail — see [docs/CI-CD.md §6](docs/CI-CD.md). |
 
 Video features need `ffmpeg` on `PATH`; photos, browsing and sharing work without it.
 Reaching your library from outside the house is set up in the app under
 **Remote access…** — see [docs/REMOTE-ACCESS.md](docs/REMOTE-ACCESS.md).
 
-Both warnings are because the packages are not code-signed, which costs a yearly
-certificate rather than a code change.
-[docs/CI-CD.md §5](docs/CI-CD.md) explains exactly what signing would involve.
+### Opening it on macOS the first time
+
+macOS will say NestDrive **"is not verified"** or **"cannot be opened"**, and the only
+button offered is **Move to Bin**. Do not use it. The app is not damaged; it has no
+Apple Developer signature, and since macOS 15 Apple no longer accepts right-click →
+Open as a way past that.
+
+1. Click **Done** or **Cancel** — *not* Move to Bin.
+2. Open **System Settings → Privacy & Security**.
+3. Scroll down. There is a line reading *"NestDrive was blocked to protect your Mac"*
+   with an **Open Anyway** button. Click it.
+4. Authenticate, then launch NestDrive again. It opens, and keeps opening from then on.
+
+Both this and the Windows SmartScreen prompt exist because the packages are not
+code-signed — a yearly certificate rather than a code change.
+[docs/CI-CD.md §5](docs/CI-CD.md) covers what signing would involve and what it costs.
 
 ---
 

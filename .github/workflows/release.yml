@@ -61,18 +61,40 @@ jobs:
           echo "event=${{ github.event_name }} ref=${{ github.ref }} base=${{ github.base_ref }}"
           exit 1
 
+      # fetch-depth: 0 for the tags and the history between them. The whole version
+      # calculation is "what has been committed since the last release tag", and a
+      # shallow clone has neither half of that.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - id: read
-        name: Read the version from CMakeLists.txt
+        name: Work out the next version from the commit messages
         run: |
-          version=$(grep -oP 'project\(MyNAS VERSION \K[0-9]+\.[0-9]+\.[0-9]+' CMakeLists.txt)
+          # Nothing is read from a tracked file and nothing is written back. The
+          # previous version is the last v* tag; the increment comes from the
+          # Conventional Commits since it. See scripts/next-version.sh.
+          version=$(sh scripts/next-version.sh --explain)
+
           if [ -z "$version" ]; then
-            echo "::error::Could not read the version out of CMakeLists.txt."
+            echo "::error::Could not work out the next version."
             exit 1
           fi
+
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Releasing v$version"
+
+          previous=$(git tag -l 'v*' --merged HEAD --sort=-v:refname | head -n 1)
+          {
+            echo "### Version"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Previous release | \`${previous:-none}\` |"
+            echo "| This release | \`v${version}\` |"
+            echo ""
+            echo "Derived from the Conventional Commits since \`${previous:-the start}\`."
+            echo "Nothing is committed back — the tag is the record."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ── Windows: NSIS installer, plus a portable zip ───────────────────────────
   windows:
@@ -111,6 +133,7 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DNESTDRIVE_VERSION="${VERSION}" \
             -DNESTDRIVE_BUILD_TESTS=OFF \
             -DNESTDRIVE_BUILD_BENCH=OFF
           cmake --build build --parallel
@@ -158,6 +181,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0 \
+            -DNESTDRIVE_VERSION="${VERSION}" \
             -DNESTDRIVE_BUILD_TESTS=OFF \
             -DNESTDRIVE_BUILD_BENCH=OFF
           cmake --build build --parallel
@@ -237,6 +261,7 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DNESTDRIVE_VERSION="${VERSION}" \
             -DNESTDRIVE_BUILD_TESTS=OFF \
             -DNESTDRIVE_BUILD_BENCH=OFF
           cmake --build build --parallel
@@ -473,7 +498,7 @@ jobs:
           | Platform | File | Notes |
           |---|---|---|
           | **Windows 10/11 (x64)** | `...-windows-x64.exe` | Installer. SmartScreen will warn — **More info → Run anyway**. |
-          | **macOS (Apple Silicon)** | `...-macos-arm64.dmg` | Open, drag to Applications. First launch: **right-click → Open**. |
+          | **macOS (Apple Silicon)** | `...-macos-arm64.dmg` | Open, drag to Applications. Blocked on first launch — **System Settings → Privacy & Security → Open Anyway**. |
           | **Linux (x86_64)** | `...-linux-x86_64.AppImage` | `chmod +x` it and run. No install needed. |
 
           Both warnings are because the binaries are unsigned — see
@@ -486,16 +511,16 @@ jobs:
           ## Changes
           HEADER
 
-          # Everything since the previous tag, so the notes are generated from what
-          # was actually committed rather than from memory.
-          previous=$(git describe --tags --abbrev=0 "v${VERSION}^" 2>/dev/null \
-                     || git describe --tags --abbrev=0 HEAD^ 2>/dev/null || true)
-
-          if [ -n "$previous" ]; then
-            git log --no-merges --pretty='- %s' "${previous}..HEAD" >> notes.md
-          else
-            echo "- First packaged release." >> notes.md
-          fi
+          # Grouped into what the reader came for, rather than a flat list of commit
+          # subjects. The previous version of this step emitted `git log --pretty=- %s`
+          # directly, which put a security fix and a pipeline tweak side by side with
+          # equal weight and leaked `fix(ci):` into text meant for a person.
+          #
+          # The script finds the previous tag the same way scripts/next-version.sh
+          # does, so the notes cover exactly the commits the version was calculated
+          # from. The tag for this release does not exist yet — `gh release create`
+          # creates it below — so the newest tag is still the previous release.
+          sh scripts/release-notes.sh >> notes.md
 
           cat notes.md
 

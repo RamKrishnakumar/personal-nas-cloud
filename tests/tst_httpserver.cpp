@@ -188,6 +188,7 @@ private slots:
     void cleanupTestCase();
 
     void servesDirectoryListing();
+    void servesTheApplicationIcon();
     void escapesFilenamesInListing();
     void servesWholeFileWithExactLength();
     void videoProbeRangeIsHonoured();
@@ -331,6 +332,33 @@ void TestHttpServer::servesDirectoryListing()
     QVERIFY(r.header("content-type").startsWith("text/html"));
     QVERIFY(r.body.contains("/_static/app.js"));
     QCOMPARE(r.body.size(), r.header("content-length").toLongLong());
+}
+
+void TestHttpServer::servesTheApplicationIcon()
+{
+    // The icon lives in a second resource set on nestdrive_handlers, which is a static
+    // library — and a static library's resources are registered by a constructor the
+    // linker is free to discard when it believes nothing refers to it. The failure is
+    // silent and total: every page loses its favicon, the window loses its icon, and
+    // the only symptom is an absence.
+    //
+    // Asked for over HTTP rather than as QFile(":/web/icon.svg") so this covers the
+    // route as well. /_static/ is deliberately reachable without a session, because
+    // the sign-in page needs its icon too, and that is worth pinning: moving the icon
+    // behind authentication would make the one page served to strangers the one page
+    // without it.
+    const Response r = request("GET /_static/icon.svg HTTP/1.1\r\nHost: h\r\n\r\n");
+
+    QCOMPARE(r.status, 200);
+    QVERIFY2(r.header("content-type").startsWith("image/svg+xml"),
+             "an SVG served as anything else will not render as a favicon");
+    QVERIFY2(r.body.contains("<svg"), "the body should be the SVG document");
+    QCOMPARE(r.body.size(), r.header("content-length").toLongLong());
+
+    // The menu-bar variant travels in the same resource set and is just as easy to
+    // lose, but has no other test that would notice.
+    const Response tray = request("GET /_static/tray.svg HTTP/1.1\r\nHost: h\r\n\r\n");
+    QCOMPARE(tray.status, 200);
 }
 
 void TestHttpServer::escapesFilenamesInListing()
